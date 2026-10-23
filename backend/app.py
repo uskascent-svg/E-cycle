@@ -671,7 +671,7 @@ def create_app(db_path=None):
         if not os.environ.get("GEMINI_API_KEY") or genai is None:
             return jsonify({"available": False, "fallback": True, "message": "E-Cycle Guide: Gemini is not configured on this deployment yet. Use guide.html for e-waste guidance, submit-ewaste.html to submit an item, operations.html for pickup and certificates, or track.html to check a tracking ID."})
         try:
-            client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options=genai.types.HttpOptions(timeout=15000))
+            client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options=genai.types.HttpOptions(timeout=30000))
             assistant_prompt = """You are E-Cycle AI, the website's practical e-waste guide and navigation assistant.
 
 Be concise, warm, safety-first, and useful. Help users identify the right E-Cycle workflow:
@@ -702,7 +702,7 @@ User message:
             executor = ThreadPoolExecutor(max_workers=1)
             future = executor.submit(call_provider)
             try:
-                response = future.result(timeout=12)
+                response = future.result(timeout=30)
             except FutureTimeoutError:
                 future.cancel()
                 raise TimeoutError("Gemini request timed out")
