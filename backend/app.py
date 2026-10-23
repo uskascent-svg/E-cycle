@@ -669,7 +669,7 @@ def create_app(db_path=None):
         if len(recent) >= 20: raise ApiError("AI request limit reached; try again in a minute", 429)
         recent.append(now); assistant_requests[key] = recent
         if not os.environ.get("GEMINI_API_KEY") or genai is None:
-            return jsonify({"available": False, "message": "E-Cycle AI is not configured yet. Set GEMINI_API_KEY on the server to enable it."}), 503
+            return jsonify({"available": False, "fallback": True, "message": "E-Cycle Guide: Gemini is not configured on this deployment yet. Use guide.html for e-waste guidance, submit-ewaste.html to submit an item, operations.html for pickup and certificates, or track.html to check a tracking ID."})
         try:
             client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options=genai.types.HttpOptions(timeout=15000))
             assistant_prompt = """You are E-Cycle AI, the website's practical e-waste guide and navigation assistant.
