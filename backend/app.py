@@ -698,9 +698,7 @@ e-waste and website navigation, say what you can help with and redirect.
 User message:
 """ + message.strip()
             def call_provider():
-                if hasattr(client, "interactions"):
-                    return client.interactions.create(model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"), input=message.strip(), system_instruction=assistant_prompt, store=False)
-                return client.models.generate_content(model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"), contents=assistant_prompt)
+                return client.models.generate_content(model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"), contents=assistant_prompt)
             executor = ThreadPoolExecutor(max_workers=1)
             future = executor.submit(call_provider)
             try:
