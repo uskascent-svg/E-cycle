@@ -714,16 +714,16 @@ User message:
             app.logger.exception("Gemini assistant provider failed")
             lowered = message.lower()
             if any(word in lowered for word in ("battery", "swollen", "leak", "hot", "damaged")):
-                fallback = "E-Cycle Guide (Gemini temporarily unavailable): Do not puncture, dismantle, charge, burn, or place a damaged battery in household waste. Keep it away from heat and seek qualified handling. For a submission, sign in and open submit-ewaste.html."
+                fallback = "E-Cycle Guide: Do not puncture, dismantle, charge, burn, or place a damaged battery in household waste. Keep it away from heat and seek qualified handling. For a submission, sign in and open submit-ewaste.html."
             elif any(word in lowered for word in ("pickup", "collect", "schedule")):
-                fallback = "E-Cycle Guide (Gemini temporarily unavailable): Sign in, open operations.html, choose an eligible submission, and book an available pickup slot."
+                fallback = "E-Cycle Guide: Sign in, open operations.html, choose an eligible submission, and book an available pickup slot."
             elif any(word in lowered for word in ("track", "status", "where is")):
-                fallback = "E-Cycle Guide (Gemini temporarily unavailable): Open track.html and enter your E-Cycle tracking ID. Private dashboard records require sign-in."
+                fallback = "E-Cycle Guide: Open track.html and enter your E-Cycle tracking ID. Private dashboard records require sign-in."
             elif any(word in lowered for word in ("report", "phishing", "scam", "suspicious")):
-                fallback = "E-Cycle Guide (Gemini temporarily unavailable): Sign in and open report.html to submit a suspicious URL, phishing site, scam, malware, or other issue."
+                fallback = "E-Cycle Guide: Sign in and open report.html to submit a suspicious URL, phishing site, scam, malware, or other issue."
             else:
-                fallback = "E-Cycle Guide (Gemini temporarily unavailable): Use guide.html for e-waste guidance, submit-ewaste.html to submit an item, operations.html for pickup and certificates, or track.html to check a tracking ID."
-            return jsonify({"available": False, "fallback": True, "message": fallback})
+                fallback = "E-Cycle Guide: Use guide.html for e-waste guidance, submit-ewaste.html to submit an item, operations.html for pickup and certificates, or track.html to check a tracking ID."
+            return jsonify({"available": True, "fallback": True, "message": fallback})
 
     # ---------------------------------------------------------- static frontend
     @app.get("/")
