@@ -71,8 +71,9 @@ distributed rate limiting. These are documented limitations, not simulated featu
 The repository includes `render.yaml` for a Python web service. Connect the repository
 to Render, create the Blueprint service, and set `GEMINI_API_KEY` as a secret in the
 service environment. The Blueprint generates `ECYCLE_SECRET_KEY`, enables secure
-cookies, runs Gunicorn, checks `/api/health`, and mounts persistent storage for the
-SQLite database. Render service deployment still requires a connected Git repository
+cookies, runs Gunicorn, and checks `/api/health`. The free deployment uses ephemeral
+SQLite storage; move to managed PostgreSQL before relying on persistence across
+redeploys. Render service deployment still requires a connected Git repository
 and Render account authorization; those are not present in this local workspace.
 
 - Added `GET /api/health` to verify the API and database connection.
