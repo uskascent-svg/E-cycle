@@ -711,6 +711,7 @@ User message:
             text_value = getattr(response, "text", None) or str(response)
             return jsonify({"available": True, "message": text_value or "I could not produce a response."})
         except Exception:
+            app.logger.exception("Gemini assistant provider failed")
             lowered = message.lower()
             if any(word in lowered for word in ("battery", "swollen", "leak", "hot", "damaged")):
                 fallback = "E-Cycle Guide (Gemini temporarily unavailable): Do not puncture, dismantle, charge, burn, or place a damaged battery in household waste. Keep it away from heat and seek qualified handling. For a submission, sign in and open submit-ewaste.html."
