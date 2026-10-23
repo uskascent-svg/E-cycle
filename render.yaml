@@ -2,6 +2,7 @@ services:
   - type: web
     name: e-cycle
     runtime: python
+    plan: free
     buildCommand: pip install -r backend/requirements.txt
     startCommand: gunicorn --chdir backend --workers 1 --threads 4 --timeout 60 wsgi:app
     healthCheckPath: /api/health
