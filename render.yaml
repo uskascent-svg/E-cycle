@@ -12,6 +12,6 @@ services:
       - key: ECYCLE_SECURE_COOKIES
         value: "1"
       - key: GEMINI_MODEL
-        value: gemini-flash-latest
+        value: gemini-3.6-flash
       - key: GEMINI_API_KEY
         sync: false
