@@ -1,0 +1,16 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Dashboard | E-Cycle</title><link rel="stylesheet" href="css/style.css"></head><body>
+<nav class="navbar"><div class="container nav-content">
+<a href="index.html" class="logo">♻️ E-Cycle</a>
+<div class="nav-links">
+<a href="index.html">Home</a><a href="about.html">About</a><a href="how-it-works.html">How It Works</a>
+<a href="guide.html">E-Waste Guide</a><a href="community.html">Community</a><a href="impact.html">Impact</a>
+</div>
+<div class="nav-buttons"><a href="login.html" class="btn btn-outline">Login</a><a href="register.html" class="btn btn-primary">Register</a></div>
+</div></nav>
+
+<section class="dashboard"><div class="container">
+<div class="welcome"><div><span class="tag">USER DASHBOARD</span><h1>Welcome, <span id="welcomeName">there</span> 👋</h1><p>Manage your e-waste submissions and collection requests.</p></div><a href="submit-ewaste.html" class="btn btn-primary btn-large">+ Submit E-Waste</a></div>
+<div class="stat-grid"><div class="stat"><small>My Submissions</small><strong id="statTotal">–</strong></div><div class="stat"><small>Active Requests</small><strong id="statActive">–</strong></div><div class="stat"><small>Completed</small><strong id="statCompleted">–</strong></div><div class="stat"><small>Certificates</small><strong id="statCertificates">–</strong></div></div>
+<div class="panel"><h3>Recent Submissions</h3><table class="table"><thead><tr><th>Device</th><th>Condition</th><th>Recommendation</th><th>Status</th><th>Tracking ID</th></tr></thead><tbody id="submissionRows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table><p id="dashboardMessage" style="margin-top:12px"></p></div>
+</div></section>
+<footer><div class="container footer-content"><div><h3>♻️ E-Cycle</h3><p>Community E-Waste Management Platform</p></div><div><p>© 2026 E-Cycle. CEP Project.</p></div></div></footer><script src="js/script.js"></script></body></html>

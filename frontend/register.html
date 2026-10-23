@@ -1,0 +1,20 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Register | E-Cycle</title><link rel="stylesheet" href="css/style.css"></head><body>
+<nav class="navbar"><div class="container nav-content">
+<a href="index.html" class="logo">♻️ E-Cycle</a>
+<div class="nav-links">
+<a href="index.html">Home</a><a href="about.html">About</a><a href="how-it-works.html">How It Works</a>
+<a href="guide.html">E-Waste Guide</a><a href="community.html">Community</a><a href="impact.html">Impact</a>
+</div>
+<div class="nav-buttons"><a href="login.html" class="btn btn-outline">Login</a><a href="register.html" class="btn btn-primary">Register</a></div>
+</div></nav>
+
+<section class="page-hero"><div class="container"><span class="tag">JOIN E-CYCLE</span><h1>Create Your Account</h1><p>Start managing your e-waste responsibly.</p></div></section>
+<section class="section"><div class="container"><div class="form-wrap">
+<form onsubmit="handleRegister(event)"><div class="form-row"><div class="form-group"><label>Name</label><input id="regName" required minlength="2" maxlength="100" placeholder="Your name"></div><div class="form-group"><label>Phone</label><input id="regPhone" required placeholder="9876543210"></div></div>
+<div class="form-group"><label>Email</label><input id="regEmail" type="email" required placeholder="you@example.com"></div>
+<div class="form-group"><label>Password</label><input id="regPassword" type="password" required minlength="8" maxlength="128" placeholder="At least 8 characters"></div>
+<div class="form-group"><label>Address</label><textarea id="regAddress" required minlength="5" maxlength="500" placeholder="Pickup / contact address"></textarea></div>
+<button class="btn btn-primary btn-large" type="submit">Create Account</button></form>
+<p id="registerMessage" style="margin-top:15px"></p>
+</div></div></section>
+<footer><div class="container footer-content"><div><h3>♻️ E-Cycle</h3><p>Community E-Waste Management Platform</p></div><div><p>© 2026 E-Cycle. CEP Project.</p></div></div></footer><script src="js/script.js"></script></body></html>

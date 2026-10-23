@@ -1,0 +1,26 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Submit E-Waste | E-Cycle</title><link rel="stylesheet" href="css/style.css"></head><body>
+<nav class="navbar"><div class="container nav-content">
+<a href="index.html" class="logo">♻️ E-Cycle</a>
+<div class="nav-links">
+<a href="index.html">Home</a><a href="about.html">About</a><a href="how-it-works.html">How It Works</a>
+<a href="guide.html">E-Waste Guide</a><a href="community.html">Community</a><a href="impact.html">Impact</a>
+</div>
+<div class="nav-buttons"><a href="login.html" class="btn btn-outline">Login</a><a href="register.html" class="btn btn-primary">Register</a></div>
+</div></nav>
+
+<section class="page-hero"><div class="container"><span class="tag">SUBMIT E-WASTE</span><h1>Tell Us About Your Device</h1><p>Enter simple details and get a responsible-action recommendation.</p></div></section>
+<section class="section"><div class="container"><div class="form-wrap">
+<form onsubmit="handleSubmitEwaste(event)">
+<div class="form-row"><div class="form-group"><label>Device Category</label><select id="category" required><option value="">Select</option><option>Laptop</option><option>Mobile Phone</option><option>Television</option><option>Computer</option><option>Other</option></select></div>
+<div class="form-group"><label>Device Name</label><input id="device" required placeholder="e.g. Dell Laptop"></div></div>
+<div class="form-row"><div class="form-group"><label>Brand</label><input id="brand" placeholder="e.g. Dell"></div><div class="form-group"><label>Quantity</label><input id="quantity" type="number" min="1" value="1" required></div></div>
+<div class="form-group"><label>Condition</label><select id="condition" required><option value="">Select condition</option><option value="working">Working</option><option value="partially_working">Partially Working</option><option value="non_working">Non-Working</option></select></div>
+<div class="form-group"><label><input id="batteryDamaged" type="checkbox" style="width:auto;margin-right:8px">Battery is damaged or swollen</label><small style="color:#68756d">Do not dismantle it yourself — we will route it to specialized handling.</small></div>
+<div class="form-group"><label>Location</label><input id="location" required placeholder="e.g. Nashik"></div>
+<div class="form-group"><label>Description</label><textarea id="description" placeholder="Any additional details"></textarea></div>
+<button class="btn btn-primary btn-large" type="submit">Submit E-Waste</button>
+<p id="submitMessage" style="margin-top:15px"></p>
+</form>
+<div id="submissionResult" class="result"><h3>✓ E-Waste Submitted Successfully</h3><p>Your Tracking ID:</p><div id="trackingId" class="tracking"></div><p style="margin-top:15px">Recommended Action:</p><strong id="recommendation"></strong><p style="margin-top:15px">Status: <span class="badge">SUBMITTED</span></p><p id="guestNote" class="notice" style="display:none">You are not logged in, so this submission is not linked to an account. Save your tracking ID, or <a href="register.html" style="color:#16804b;font-weight:700">register</a> before your next submission to see it on your dashboard.</p><a id="trackLink" href="track.html" class="btn btn-primary" style="margin-top:18px">Track Submission</a></div>
+</div></div></section>
+<footer><div class="container footer-content"><div><h3>♻️ E-Cycle</h3><p>Community E-Waste Management Platform</p></div><div><p>© 2026 E-Cycle. CEP Project.</p></div></div></footer><script src="js/script.js"></script></body></html>

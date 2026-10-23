@@ -1,0 +1,18 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Track E-Waste | E-Cycle</title><link rel="stylesheet" href="css/style.css"></head><body>
+<nav class="navbar"><div class="container nav-content">
+<a href="index.html" class="logo">♻️ E-Cycle</a>
+<div class="nav-links">
+<a href="index.html">Home</a><a href="about.html">About</a><a href="how-it-works.html">How It Works</a>
+<a href="guide.html">E-Waste Guide</a><a href="community.html">Community</a><a href="impact.html">Impact</a>
+</div>
+<div class="nav-buttons"><a href="login.html" class="btn btn-outline">Login</a><a href="register.html" class="btn btn-primary">Register</a></div>
+</div></nav>
+
+<section class="page-hero"><div class="container"><span class="tag">TRACK YOUR ITEM</span><h1>Track E-Waste Journey</h1><p>Enter the tracking ID received after submission.</p></div></section>
+<section class="section"><div class="container"><div class="form-wrap">
+<form onsubmit="handleTrack(event)"><div class="form-group"><label>Tracking ID</label><input id="trackId" placeholder="EC-2026-0001" required></div><button class="btn btn-primary btn-large" type="submit">Track</button></form>
+<p id="trackMessage" style="margin-top:15px"></p>
+<div id="trackResult" class="result"><h3>Tracking Result</h3><p class="tracking" id="shownTrackId"></p><p id="trackSummary" style="color:#68756d"></p><div id="timeline"></div><h4 style="margin-top:22px">Journey updates</h4><div id="trackHistory" aria-live="polite"></div></div>
+<div class="notice">Status is read live from the E-Cycle database. Only device type and progress are shown, never personal details.</div>
+</div></div></section>
+<footer><div class="container footer-content"><div><h3>♻️ E-Cycle</h3><p>Community E-Waste Management Platform</p></div><div><p>© 2026 E-Cycle. CEP Project.</p></div></div></footer><script src="js/script.js"></script></body></html>

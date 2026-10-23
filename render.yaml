@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: e-cycle
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: gunicorn --chdir backend --workers 1 --threads 4 --timeout 60 wsgi:app
+    healthCheckPath: /api/health
+    envVars:
+      - key: ECYCLE_SECRET_KEY
+        generateValue: true
+      - key: ECYCLE_SECURE_COOKIES
+        value: "1"
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_API_KEY
+        sync: false
+    disk:
+      name: e-cycle-data
+      mountPath: /opt/render/project/src/backend/data
+      sizeGB: 1

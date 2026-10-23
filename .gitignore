@@ -1,0 +1,14 @@
+backend/data/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+.venv/
+backend/data/
+*.db
+.env
+.env.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
