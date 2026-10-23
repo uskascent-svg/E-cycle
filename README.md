@@ -89,3 +89,36 @@ and Render account authorization; those are not present in this local workspace.
 ## Production-readiness notes
 
 This is a practical educational project, not a fully audited production service. Before public deployment, use HTTPS, set a long random `ECYCLE_SECRET_KEY`, set `ECYCLE_SECURE_COOKIES=1`, use a production WSGI server, configure backups and monitoring, and add rate limiting/email verification/password reset if needed. The built-in Flask development server is for local development only. Never publish the generated admin password or `backend/data/.secret_key`.
+
+## Operational workflow upgrade
+
+The existing Flask/SQLite architecture remains the single source of business logic. The
+schema now adds verified distributors, assignments and assignment history, facilities,
+facility intake, processing evidence, and in-app notifications. Existing submissions,
+tracking IDs, pickups, certificates, reports, drives, and audit records are preserved.
+
+Admin workflow:
+
+1. Create a distributor record for an existing user with `/api/admin/distributors`.
+2. Verify it with `PATCH /api/admin/distributors/<id>` after reviewing documents externally.
+3. Create an assignment with `POST /api/admin/assignments`; server validation checks status,
+   category, service area, verification, duplicate assignments, and daily capacity.
+4. Create and verify a facility, then record facility intake and processing evidence.
+
+Distributor users sign in normally and use `distributor.html`. They can only see assignments
+linked to their verified distributor record, accept or decline offers, and record collection
+evidence. Users receive in-app notifications through `/api/notifications/mine`.
+
+Important distinction: processing records are E-Cycle platform records backed by facility
+intake and evidence notes. They are not statutory certificates. Certificates remain issued
+only by an administrator after processing.
+
+New protected API groups include `/api/admin/overview`, `/api/admin/distributors`,
+`/api/admin/assignments`, `/api/distributor/jobs`, `/api/distributor/assignments/*`,
+`/api/admin/facilities`, `/api/admin/facility-intake`, `/api/admin/processing`, and
+`/api/notifications/*`.
+
+The current deployment still uses SQLite, so Render's free ephemeral filesystem is not
+suitable for durable production records. The next production migration should move these
+tables and existing data to managed PostgreSQL, private object storage for evidence, and a
+real email provider with retry tracking.

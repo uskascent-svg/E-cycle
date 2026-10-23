@@ -126,3 +126,91 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id);
+
+-- Operational partner and end-to-end collection workflow. These tables extend
+-- the existing SQLite deployment without changing or deleting existing data.
+CREATE TABLE IF NOT EXISTS distributors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    service_area TEXT NOT NULL,
+    supported_categories TEXT NOT NULL DEFAULT '[]',
+    capacity INTEGER NOT NULL DEFAULT 1 CHECK (capacity BETWEEN 1 AND 10000),
+    verification_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (verification_status IN ('PENDING','VERIFIED','SUSPENDED','EXPIRED')),
+    status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','SUSPENDED','INACTIVE')),
+    document_expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_distributors_area ON distributors(service_area, status, verification_status);
+
+CREATE TABLE IF NOT EXISTS assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id INTEGER NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+    distributor_id INTEGER NOT NULL REFERENCES distributors(id),
+    pickup_date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OFFERED' CHECK (status IN ('OFFERED','ACCEPTED','DECLINED','RESCHEDULE_REQUESTED','COMPLETED','FAILED','CANCELLED')),
+    assigned_by INTEGER NOT NULL REFERENCES users(id),
+    accepted_at TEXT,
+    completed_at TEXT,
+    failure_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_assignments_distributor ON assignments(distributor_id, status, pickup_date);
+
+CREATE TABLE IF NOT EXISTS assignment_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_assignment_history_assignment ON assignment_history(assignment_id, created_at);
+
+CREATE TABLE IF NOT EXISTS facilities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    service_area TEXT NOT NULL,
+    supported_categories TEXT NOT NULL DEFAULT '[]',
+    capacity INTEGER NOT NULL DEFAULT 1 CHECK (capacity BETWEEN 1 AND 100000),
+    verification_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (verification_status IN ('PENDING','VERIFIED','SUSPENDED','EXPIRED')),
+    document_expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS facility_intake (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id INTEGER NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+    facility_id INTEGER NOT NULL REFERENCES facilities(id),
+    received_quantity INTEGER NOT NULL CHECK (received_quantity >= 0),
+    discrepancy_note TEXT,
+    received_at TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS processing_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id INTEGER NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+    facility_id INTEGER NOT NULL REFERENCES facilities(id),
+    outcome TEXT NOT NULL CHECK (outcome IN ('REPAIR','REUSE','REFURBISH','DISMANTLE','MATERIAL_RECOVERY','OTHER')),
+    processed_quantity INTEGER NOT NULL CHECK (processed_quantity >= 0),
+    evidence_note TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at);

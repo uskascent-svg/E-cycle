@@ -109,6 +109,43 @@ async function initNav() {
     }
 }
 
+/* ---------- distributor workspace ---------- */
+async function loadDistributorWorkspace() {
+    const rows = $("distributorRows");
+    if (!rows) return;
+    try {
+        const result = await api("/distributor/jobs");
+        rows.textContent = "";
+        if (!result.jobs.length) { const td = make("td", "No assignments are currently available.", "empty"); td.colSpan = 6; const tr = make("tr"); tr.append(td); rows.append(tr); return; }
+        result.jobs.forEach(job => {
+            const tr = make("tr");
+            [job.tracking_id, `${job.quantity} × ${job.device_name}`, `${job.pickup_date} ${job.start_time}–${job.end_time}`, job.location, prettyStatus(job.status)].forEach(value => tr.append(make("td", value)));
+            const td = make("td");
+            if (job.status === "OFFERED") {
+                const accept = make("button", "Accept", "btn btn-primary"); accept.type = "button"; accept.onclick = () => decideDistributorJob(job.id, "ACCEPTED");
+                const decline = make("button", "Decline", "btn btn-outline"); decline.type = "button"; decline.style.marginLeft = "6px"; decline.onclick = () => decideDistributorJob(job.id, "DECLINED"); td.append(accept, decline);
+            } else if (job.status === "ACCEPTED") {
+                const complete = make("button", "Record collection", "btn btn-primary"); complete.type = "button"; complete.onclick = () => completeDistributorJob(job.id, job.quantity); td.append(complete);
+            } else td.append(make("span", "—"));
+            tr.append(td); rows.append(tr);
+        });
+    } catch (e) { showMessage($("distributorMessage"), e.message); }
+}
+
+async function decideDistributorJob(id, decision) {
+    const reason = decision === "DECLINED" ? window.prompt("Why are you declining this assignment?") : "";
+    if (decision === "DECLINED" && !reason) return;
+    try { await api(`/distributor/assignments/${id}/decision`, { method: "POST", body: { decision, reason } }); loadDistributorWorkspace(); }
+    catch (e) { showMessage($("distributorMessage"), e.message); }
+}
+
+async function completeDistributorJob(id, quantity) {
+    const note = window.prompt("Enter collection evidence or acknowledgement details:");
+    if (!note) return;
+    try { await api(`/distributor/assignments/${id}/complete`, { method: "POST", body: { collected_quantity: quantity, evidence_note: note } }); loadDistributorWorkspace(); }
+    catch (e) { showMessage($("distributorMessage"), e.message); }
+}
+
 /* ---------- auth forms ---------- */
 function handleLogin(event) {
     withBusy(event, async () => {
@@ -390,4 +427,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (id) { $("trackId").value = id; runTrack(id.trim().toUpperCase()); }
     }
     if ($("pickupSlots")) loadOperations();
+    if ($("distributorRows")) {
+        $("distributorRefresh")?.addEventListener("click", loadDistributorWorkspace);
+        loadDistributorWorkspace();
+    }
 });

@@ -211,6 +211,17 @@ def create_app(db_path=None):
     def user_json(u):
         return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"]}
 
+    def notify(user_id, event_type, message, conn=None):
+        (conn or get_db()).execute(
+            "INSERT INTO notifications (user_id, event_type, message) VALUES (?,?,?)",
+            (user_id, event_type, message),
+        )
+
+    def json_list(value, field):
+        if not isinstance(value, list) or not value or any(not isinstance(x, str) for x in value):
+            raise ApiError(f"{field} must be a non-empty list of text values", field=field)
+        return json.dumps(sorted({x.strip() for x in value if x.strip()}))
+
     # -------------------------------------------------------------------- health
     @app.get("/api/health")
     def health():
@@ -506,6 +517,204 @@ def create_app(db_path=None):
             (title, location, when.isoformat(), description))
         get_db().commit()
         return jsonify({"id": cur.lastrowid}), 201
+
+    # ----------------------------------------------- distributors and workflow
+    @app.get("/api/admin/overview")
+    @admin_required
+    def admin_overview():
+        conn = get_db()
+        count = lambda sql: conn.execute(sql).fetchone()[0]
+        return jsonify({
+            "users": count("SELECT COUNT(*) FROM users WHERE role='user'"),
+            "pending_submissions": count("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED')"),
+            "active_assignments": count("SELECT COUNT(*) FROM assignments WHERE status IN ('OFFERED','ACCEPTED','RESCHEDULE_REQUESTED')"),
+            "scheduled_today": conn.execute("SELECT COUNT(*) FROM assignments WHERE pickup_date=? AND status NOT IN ('CANCELLED','FAILED','COMPLETED')", (date.today().isoformat(),)).fetchone()[0],
+            "collected_items": conn.execute("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()[0],
+            "processing_items": count("SELECT COUNT(*) FROM submissions WHERE status='COLLECTED'"),
+            "completed_items": count("SELECT COUNT(*) FROM submissions WHERE status='PROCESSED'"),
+            "verified_distributors": count("SELECT COUNT(*) FROM distributors WHERE verification_status='VERIFIED' AND status='ACTIVE'"),
+            "verified_facilities": count("SELECT COUNT(*) FROM facilities WHERE verification_status='VERIFIED'"),
+        })
+
+    @app.post("/api/admin/distributors")
+    @admin_required
+    def admin_create_distributor():
+        d = body(); user_id = d.get("user_id"); email = text(d, "email", "Email", 3, 254, required=False)
+        if not isinstance(user_id, int) and not email:
+            raise ApiError("user_id or email is required")
+        user = get_db().execute("SELECT id FROM users WHERE id=? OR lower(email)=lower(?)", (user_id or -1, email or "")).fetchone()
+        if not user: raise ApiError("User account not found", 404)
+        area = text(d, "service_area", "Service area", 2, 100)
+        categories = json_list(d.get("supported_categories"), "supported_categories")
+        capacity = d.get("capacity", 1)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or not 1 <= capacity <= 10000:
+            raise ApiError("Capacity must be a whole number from 1 to 10000", field="capacity")
+        try:
+            cur = get_db().execute("INSERT INTO distributors (user_id,service_area,supported_categories,capacity) VALUES (?,?,?,?)", (user["id"], area, categories, capacity))
+            get_db().execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"], "CREATE_DISTRIBUTOR", "distributor", str(cur.lastrowid)))
+            get_db().commit()
+        except sqlite3.IntegrityError: raise ApiError("That user is already a distributor", 409)
+        return jsonify({"id": cur.lastrowid, "verification_status": "PENDING", "status": "ACTIVE"}), 201
+
+    @app.get("/api/admin/distributors")
+    @admin_required
+    def admin_list_distributors():
+        rows = get_db().execute("SELECT d.*,u.name,u.email,u.phone FROM distributors d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC").fetchall()
+        out = []
+        for row in rows:
+            item = dict(row); item["supported_categories"] = json.loads(item["supported_categories"] or "[]"); out.append(item)
+        return jsonify({"distributors": out})
+
+    @app.patch("/api/admin/distributors/<int:distributor_id>")
+    @admin_required
+    def admin_update_distributor(distributor_id):
+        d = body(); fields = []; args = []
+        for key in ("service_area", "document_expires_at"):
+            if key in d:
+                fields.append(key + "=?"); args.append(text(d, key, key.replace("_", " ").title(), 2, 120))
+        if "supported_categories" in d: fields.append("supported_categories=?"); args.append(json_list(d["supported_categories"], "supported_categories"))
+        if "capacity" in d:
+            if isinstance(d["capacity"], bool) or not isinstance(d["capacity"], int) or not 1 <= d["capacity"] <= 10000: raise ApiError("Invalid capacity", field="capacity")
+            fields.append("capacity=?"); args.append(d["capacity"])
+        for key, allowed in (("status", ("ACTIVE", "SUSPENDED", "INACTIVE")), ("verification_status", ("PENDING", "VERIFIED", "SUSPENDED", "EXPIRED"))):
+            if key in d:
+                if d[key] not in allowed: raise ApiError("Invalid " + key, field=key)
+                fields.append(key + "=?"); args.append(d[key])
+        if not fields: raise ApiError("No changes supplied")
+        args.append(distributor_id); cur = get_db().execute("UPDATE distributors SET " + ",".join(fields) + ",updated_at=? WHERE id=?", (*args[:-1], now_iso(), args[-1]))
+        if cur.rowcount == 0: raise ApiError("Distributor not found", 404)
+        get_db().commit(); return jsonify({"id": distributor_id, "updated": True})
+
+    def distributor_for_user():
+        row = get_db().execute("SELECT * FROM distributors WHERE user_id=?", (current_user()["id"],)).fetchone()
+        if not row: raise ApiError("Distributor access required", 403)
+        if row["status"] != "ACTIVE" or row["verification_status"] != "VERIFIED": raise ApiError("Distributor account is not active and verified", 403)
+        return row
+
+    @app.get("/api/distributor/jobs")
+    @login_required
+    def distributor_jobs():
+        distributor = distributor_for_user()
+        rows = get_db().execute("SELECT a.*,s.tracking_id,s.category,s.device_name,s.quantity,s.location,s.description FROM assignments a JOIN submissions s ON s.id=a.submission_id WHERE a.distributor_id=? ORDER BY a.pickup_date,a.start_time", (distributor["id"],)).fetchall()
+        return jsonify({"jobs": [dict(row) for row in rows]})
+
+    @app.post("/api/admin/assignments")
+    @admin_required
+    def admin_assign():
+        d = body(); tracking_id = str(d.get("tracking_id", "")).strip().upper(); distributor_id = d.get("distributor_id")
+        if not tracking_id or not isinstance(distributor_id, int): raise ApiError("tracking_id and distributor_id are required")
+        pickup_date = d.get("pickup_date"); start = text(d, "start_time", "Start time", 4, 5); end = text(d, "end_time", "End time", 4, 5)
+        try: when = date.fromisoformat(pickup_date)
+        except (TypeError, ValueError): raise ApiError("pickup_date must be YYYY-MM-DD", field="pickup_date")
+        if when < date.today(): raise ApiError("Pickup date cannot be in the past", field="pickup_date")
+        conn = get_db(); sub = conn.execute("SELECT * FROM submissions WHERE tracking_id=?", (tracking_id,)).fetchone(); dist = conn.execute("SELECT * FROM distributors WHERE id=?", (distributor_id,)).fetchone()
+        if not sub or not dist: raise ApiError("Submission or distributor not found", 404)
+        if sub["status"] not in ("VERIFIED", "SUBMITTED"): raise ApiError("Submission is not awaiting assignment", 409)
+        if dist["status"] != "ACTIVE" or dist["verification_status"] != "VERIFIED": raise ApiError("Distributor must be active and verified", 409)
+        try: categories = json.loads(dist["supported_categories"])
+        except json.JSONDecodeError: categories = []
+        if sub["category"] not in categories and "Other" not in categories: raise ApiError("Distributor does not support this category", 409)
+        active = conn.execute("SELECT COUNT(*) FROM assignments WHERE distributor_id=? AND pickup_date=? AND status IN ('OFFERED','ACCEPTED','RESCHEDULE_REQUESTED')", (distributor_id, pickup_date)).fetchone()[0]
+        if active >= dist["capacity"]: raise ApiError("Distributor capacity is full for that date", 409)
+        try:
+            cur = conn.execute("INSERT INTO assignments (submission_id,distributor_id,pickup_date,start_time,end_time,assigned_by) VALUES (?,?,?,?,?,?)", (sub["id"],distributor_id,pickup_date,start,end,current_user()["id"]))
+        except sqlite3.IntegrityError: raise ApiError("Submission already has an assignment", 409)
+        aid = cur.lastrowid; conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (aid,current_user()["id"],"OFFERED","Admin assignment created."))
+        if sub["status"] == "SUBMITTED": conn.execute("UPDATE submissions SET status='VERIFIED',updated_at=? WHERE id=?", (now_iso(),sub["id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (sub["id"],"VERIFIED","Admin approved the submission for assignment."))
+        conn.execute("UPDATE submissions SET status='COLLECTION_SCHEDULED',updated_at=? WHERE id=?", (now_iso(),sub["id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (sub["id"],"COLLECTION_SCHEDULED","Distributor assignment scheduled."))
+        notify(dist["user_id"], "ASSIGNMENT_CREATED", "A new e-waste pickup assignment is waiting for your response.", conn)
+        if sub["user_id"]: notify(sub["user_id"], "PICKUP_SCHEDULED", "Your E-Cycle pickup has been scheduled.", conn)
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)", (current_user()["id"],"ASSIGN_DISTRIBUTOR","assignment",str(aid),json.dumps({"tracking_id":tracking_id,"distributor_id":distributor_id}))); conn.commit()
+        return jsonify({"assignment_id": aid, "status": "OFFERED"}), 201
+
+    @app.post("/api/distributor/assignments/<int:assignment_id>/decision")
+    @login_required
+    def distributor_decision(assignment_id):
+        distributor = distributor_for_user(); d = body(); decision = d.get("decision"); reason = text(d, "reason", "Reason", 3, 500, required=False)
+        if decision not in ("ACCEPTED", "DECLINED"): raise ApiError("decision must be ACCEPTED or DECLINED", field="decision")
+        conn = get_db(); row = conn.execute("SELECT * FROM assignments WHERE id=? AND distributor_id=?", (assignment_id,distributor["id"])).fetchone()
+        if not row: raise ApiError("Assignment not found", 404)
+        if row["status"] != "OFFERED": raise ApiError("Only offered assignments can be decided", 409)
+        conn.execute("UPDATE assignments SET status=?,accepted_at=?,failure_reason=?,updated_at=? WHERE id=?", (decision,now_iso() if decision=="ACCEPTED" else None,reason,now_iso(),assignment_id)); conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (assignment_id,current_user()["id"],decision,reason)); conn.commit()
+        return jsonify({"assignment_id": assignment_id, "status": decision})
+
+    @app.post("/api/distributor/assignments/<int:assignment_id>/complete")
+    @login_required
+    def distributor_complete(assignment_id):
+        distributor = distributor_for_user(); d = body(); qty = d.get("collected_quantity"); note = text(d, "evidence_note", "Evidence note", 5, 1000)
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty < 0: raise ApiError("collected_quantity must be a non-negative whole number", field="collected_quantity")
+        conn = get_db(); row = conn.execute("SELECT a.*,s.tracking_id,s.quantity,s.user_id,s.status FROM assignments a JOIN submissions s ON s.id=a.submission_id WHERE a.id=? AND a.distributor_id=?", (assignment_id,distributor["id"])).fetchone()
+        if not row: raise ApiError("Assignment not found", 404)
+        if row["status"] != "ACCEPTED": raise ApiError("Assignment must be accepted first", 409)
+        if qty > row["quantity"]: raise ApiError("Collected quantity cannot exceed submitted quantity", field="collected_quantity")
+        conn.execute("UPDATE assignments SET status='COMPLETED',completed_at=?,updated_at=? WHERE id=?", (now_iso(),now_iso(),assignment_id)); conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (assignment_id,current_user()["id"],"COMPLETED",note)); conn.execute("UPDATE submissions SET status='COLLECTED',updated_at=? WHERE id=?", (now_iso(),row["submission_id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (row["submission_id"],"COLLECTED",note));
+        if row["user_id"]: notify(row["user_id"], "PICKUP_COMPLETED", "Your e-waste pickup was recorded as completed.", conn)
+        conn.commit(); return jsonify({"assignment_id": assignment_id, "tracking_id": row["tracking_id"], "status": "COLLECTED"})
+
+    @app.get("/api/notifications/mine")
+    @login_required
+    def notifications_mine():
+        rows = get_db().execute("SELECT id,event_type,message,read_at,created_at FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100", (current_user()["id"],)).fetchall()
+        return jsonify({"notifications": [dict(row) for row in rows]})
+
+    @app.post("/api/notifications/<int:notification_id>/read")
+    @login_required
+    def notification_read(notification_id):
+        cur = get_db().execute("UPDATE notifications SET read_at=? WHERE id=? AND user_id=?", (now_iso(),notification_id,current_user()["id"]))
+        get_db().commit()
+        if cur.rowcount == 0: raise ApiError("Notification not found", 404)
+        return jsonify({"id": notification_id, "read": True})
+
+    @app.post("/api/admin/facilities")
+    @admin_required
+    def admin_create_facility():
+        d = body(); name = text(d, "name", "Facility name", 2, 150); area = text(d, "service_area", "Service area", 2, 100); categories = json_list(d.get("supported_categories"), "supported_categories"); capacity = d.get("capacity", 1)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1: raise ApiError("Invalid capacity", field="capacity")
+        cur = get_db().execute("INSERT INTO facilities (name,service_area,supported_categories,capacity) VALUES (?,?,?,?)", (name,area,categories,capacity)); get_db().commit(); return jsonify({"id": cur.lastrowid, "verification_status": "PENDING"}), 201
+
+    @app.get("/api/admin/facilities")
+    @admin_required
+    def admin_list_facilities():
+        rows = get_db().execute("SELECT * FROM facilities ORDER BY id DESC").fetchall(); out = []
+        for row in rows:
+            item = dict(row); item["supported_categories"] = json.loads(item["supported_categories"] or "[]"); out.append(item)
+        return jsonify({"facilities": out})
+
+    @app.patch("/api/admin/facilities/<int:facility_id>")
+    @admin_required
+    def admin_update_facility(facility_id):
+        d = body(); status = d.get("verification_status")
+        if status not in ("PENDING", "VERIFIED", "SUSPENDED", "EXPIRED"): raise ApiError("Invalid verification_status", field="verification_status")
+        cur = get_db().execute("UPDATE facilities SET verification_status=?,updated_at=? WHERE id=?", (status, now_iso(), facility_id))
+        if cur.rowcount == 0: raise ApiError("Facility not found", 404)
+        get_db().commit(); return jsonify({"id": facility_id, "verification_status": status})
+
+    @app.post("/api/admin/facility-intake")
+    @admin_required
+    def admin_facility_intake():
+        d = body(); tracking_id = str(d.get("tracking_id", "")).strip().upper(); facility_id = d.get("facility_id"); qty = d.get("received_quantity"); received_at = d.get("received_at") or now_iso(); note = text(d, "discrepancy_note", "Discrepancy note", 1, 1000, required=False)
+        if not tracking_id or not isinstance(facility_id, int) or isinstance(qty, bool) or not isinstance(qty, int) or qty < 0: raise ApiError("tracking_id, facility_id and received_quantity are required")
+        conn = get_db(); sub = conn.execute("SELECT id,status,quantity FROM submissions WHERE tracking_id=?", (tracking_id,)).fetchone(); facility = conn.execute("SELECT id,verification_status FROM facilities WHERE id=?", (facility_id,)).fetchone()
+        if not sub or not facility: raise ApiError("Submission or facility not found", 404)
+        if facility["verification_status"] != "VERIFIED": raise ApiError("Facility must be verified", 409)
+        if sub["status"] != "COLLECTED": raise ApiError("Only collected submissions can enter a facility", 409)
+        try: conn.execute("INSERT INTO facility_intake (submission_id,facility_id,received_quantity,discrepancy_note,received_at,created_by) VALUES (?,?,?,?,?,?)", (sub["id"],facility_id,qty,note,received_at,current_user()["id"]))
+        except sqlite3.IntegrityError: raise ApiError("Facility intake already recorded", 409)
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"],"FACILITY_INTAKE","submission",tracking_id)); conn.commit(); return jsonify({"tracking_id": tracking_id, "received": True}), 201
+
+    @app.post("/api/admin/processing")
+    @admin_required
+    def admin_processing():
+        d = body(); tracking_id = str(d.get("tracking_id", "")).strip().upper(); facility_id = d.get("facility_id"); outcome = d.get("outcome"); qty = d.get("processed_quantity"); evidence = text(d, "evidence_note", "Evidence note", 5, 2000); processed_at = d.get("processed_at") or now_iso()
+        if not tracking_id or not isinstance(facility_id, int) or outcome not in ("REPAIR","REUSE","REFURBISH","DISMANTLE","MATERIAL_RECOVERY","OTHER") or isinstance(qty, bool) or not isinstance(qty, int) or qty < 0: raise ApiError("Invalid processing record")
+        conn = get_db(); sub = conn.execute("SELECT id,status,user_id FROM submissions WHERE tracking_id=?", (tracking_id,)).fetchone(); intake = conn.execute("SELECT 1 FROM facility_intake WHERE submission_id=? AND facility_id=?", (sub["id"],facility_id)).fetchone() if sub else None
+        if not sub or not intake: raise ApiError("Collected submission must have matching facility intake", 409)
+        if sub["status"] != "COLLECTED": raise ApiError("Submission is not awaiting processing", 409)
+        try: conn.execute("INSERT INTO processing_records (submission_id,facility_id,outcome,processed_quantity,evidence_note,processed_at,created_by) VALUES (?,?,?,?,?,?,?)", (sub["id"],facility_id,outcome,qty,evidence,processed_at,current_user()["id"]))
+        except sqlite3.IntegrityError: raise ApiError("Processing record already exists", 409)
+        conn.execute("UPDATE submissions SET status='PROCESSED',updated_at=? WHERE id=?", (now_iso(),sub["id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (sub["id"],"PROCESSED", "Processing completed: " + outcome));
+        if sub["user_id"]: notify(sub["user_id"], "PROCESSING_COMPLETED", "Your e-waste processing record is complete.", conn)
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)", (current_user()["id"],"PROCESSING_COMPLETED","submission",tracking_id,json.dumps({"outcome":outcome,"facility_id":facility_id}))); conn.commit(); return jsonify({"tracking_id": tracking_id, "status": "PROCESSED", "outcome": outcome}), 201
 
     # --------------------------------------------------------- operations
     @app.get("/api/pickup-slots")

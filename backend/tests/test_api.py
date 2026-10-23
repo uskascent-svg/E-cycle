@@ -231,8 +231,12 @@ class DriveTests(Base):
     def test_past_drive_cannot_be_joined(self):
         a = self.admin()
         past = (date.today() - timedelta(days=3)).isoformat()
-        did = a.post("/api/admin/drives", json={"title": "Old drive", "location": "Hall",
-                                                 "drive_date": past}).get_json()["id"]
+        with self.app.app_context():
+            conn = db.connect(self.app.config["DB_PATH"])
+            did = conn.execute("INSERT INTO drives (title, location, drive_date) VALUES (?,?,?)",
+                               ("Old drive", "Hall", past)).lastrowid
+            conn.commit()
+            conn.close()
         self.register_login()
         self.assertEqual(self.c.post(f"/api/drives/{did}/join").status_code, 400)
         self.assertEqual(self.c.get("/api/impact").get_json()["completed_drives"], 1)
