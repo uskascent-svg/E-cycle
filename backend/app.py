@@ -942,6 +942,9 @@ def create_app(db_path=None):
         monthly = conn.execute("SELECT substr(created_at,1,7) month, COALESCE(SUM(quantity),0) quantity FROM submissions GROUP BY month ORDER BY month DESC LIMIT 12").fetchall()
         activity = conn.execute("SELECT action,entity_type,entity_id,created_at FROM audit_logs ORDER BY id DESC LIMIT 10").fetchall()
         impact_row = conn.execute("SELECT COALESCE(SUM(quantity),0) collected FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()
+        demo_conn = demo_db(); demo_records = demo_data.detail_records(demo_conn); demo_conn.close()
+        demo_count = lambda kind: sum(record["record_type"] == kind for record in demo_records)
+        demo_metrics = {"users": demo_count("User"), "submissions": demo_count("E-waste submission"), "pending_tasks": demo_count("Pending task"), "completed_pickups": demo_count("Completed pickup"), "distributors": demo_count("Distributor"), "facilities": demo_count("Facility"), "collected_items": demo_count("Collected inventory"), "security_alerts": demo_count("Security alert"), "total_records": len(demo_records), "label": "SAMPLE DATA — ISOLATED FROM LIVE OPERATIONS"}
         return jsonify({
             "users": count("SELECT COUNT(*) FROM users WHERE role='user'"),
             "submissions": count("SELECT COUNT(*) FROM submissions"),
@@ -956,6 +959,7 @@ def create_app(db_path=None):
             "recent_activity": [dict(r) for r in activity],
             "environmental": {"collected_items": impact_row["collected"]},
             "monthly": [dict(r) for r in monthly],
+            "demo_metrics": demo_metrics,
         })
 
     @app.get("/api/admin/users")
