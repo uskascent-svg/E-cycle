@@ -347,6 +347,43 @@ CREATE TABLE IF NOT EXISTS security_events (
 );
 CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at, severity);
 
+-- Security operations records are additive and preserve the immutable event stream.
+CREATE TABLE IF NOT EXISTS security_incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL UNIQUE,
+    event_id INTEGER REFERENCES security_events(id) ON DELETE SET NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL')),
+    category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detection_reason TEXT NOT NULL,
+    automated_response TEXT NOT NULL DEFAULT 'Recorded for administrator review.',
+    status TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW','INVESTIGATING','CONTAINED','RESOLVED','CLOSED')),
+    assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_security_incidents_status ON security_incidents(status, severity, created_at);
+
+CREATE TABLE IF NOT EXISTS security_investigation_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id INTEGER NOT NULL REFERENCES security_incidents(id) ON DELETE CASCADE,
+    author_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_security_notes_incident ON security_investigation_notes(incident_id, created_at);
+
+CREATE TABLE IF NOT EXISTS security_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    login_lockdown INTEGER NOT NULL DEFAULT 0 CHECK (login_lockdown IN (0,1)),
+    registration_suspended INTEGER NOT NULL DEFAULT 0 CHECK (registration_suspended IN (0,1)),
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+INSERT OR IGNORE INTO security_config(id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS collection_forecasts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     forecast_month TEXT NOT NULL,

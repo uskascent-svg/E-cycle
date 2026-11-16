@@ -117,6 +117,19 @@ class UpgradeTests(unittest.TestCase):
             self.assertEqual(self.application.test_client().post("/api/auth/login", json={"email": "wrong@example.com", "password": "wrong-password"}).status_code, 401)
         self.assertEqual(self.application.test_client().post("/api/auth/login", json={"email": "wrong@example.com", "password": "wrong-password"}).status_code, 429)
 
+    def test_security_command_centre_is_authorized_and_operational(self):
+        self.assertEqual(self.client.get("/api/admin/security/overview").status_code, 403)
+        admin = self.admin()
+        self.assertEqual(admin.get("/admin/security").status_code, 200)
+        for _ in range(11):
+            self.application.test_client().post("/api/auth/login", json={"email": "security-test@example.com", "password": "wrong-password"})
+        overview = admin.get("/api/admin/security/overview").get_json()
+        self.assertIn("CRITICAL", overview["counts"])
+        self.assertIn("HIGH", overview["counts"])
+        self.assertIn("events", overview)
+        self.assertEqual(admin.patch("/api/admin/security/config", json={"login_lockdown": False, "registration_suspended": True, "reason": "Security test"}).status_code, 200)
+        self.assertEqual(self.application.test_client().post("/api/auth/register", json={"name": "Blocked", "phone": "9876543210", "email": "blocked-security@example.com", "password": "Secret123!", "address": "Nashik"}).status_code, 503)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -319,10 +319,22 @@ def create_app(db_path=None):
         """Record security telemetry without storing credentials or raw IP addresses."""
         raw_ip = request.remote_addr or "unknown"
         ip_hash = secrets.token_hex(16) if raw_ip == "unknown" else __import__("hashlib").sha256(raw_ip.encode()).hexdigest()[:32]
-        get_db().execute(
+        conn = get_db()
+        cur = conn.execute(
             "INSERT INTO security_events (event_type,severity,actor_user_id,ip_hash,metadata) VALUES (?,?,?,?,?)",
             (event_type, severity, actor_user_id, ip_hash, json.dumps(metadata or {}, separators=(",", ":"))),
         )
+        if severity in ("HIGH", "CRITICAL"):
+            category = event_type.split("_", 1)[0].title() or "Security"
+            incident_no = "INC-" + date.today().strftime("%Y%m%d") + "-" + f"{cur.lastrowid:06d}"
+            reason = str((metadata or {}).get("reason") or (metadata or {}).get("window_seconds") or "Security rule triggered")
+            conn.execute(
+                "INSERT OR IGNORE INTO security_incidents(incident_id,event_id,severity,category,title,detection_reason,automated_response) VALUES (?,?,?,?,?,?,?)",
+                (incident_no, cur.lastrowid, severity, category, event_type.replace("_", " ").title(), reason, "Event recorded and surfaced for administrator investigation."),
+            )
+
+    def security_config():
+        return get_db().execute("SELECT * FROM security_config WHERE id=1").fetchone()
 
     def award_points(user_id, submission_id, points, reason, conn=None):
         """Idempotent reward transaction; frontend values are never trusted."""
@@ -389,6 +401,11 @@ def create_app(db_path=None):
     # -------------------------------------------------------------------- auth
     @app.post("/api/auth/register")
     def register():
+        config = security_config()
+        if config and config["registration_suspended"]:
+            security_event("REGISTRATION_SUSPENDED", "MEDIUM", metadata={"reason": config["reason"] or "Administrator control"})
+            get_db().commit()
+            raise ApiError("Registration is temporarily suspended by the security administrator", 503)
         d = body()
         name = text(d, "name", "Name", 2, 100)
         email = text(d, "email", "Email", 3, 254).lower()
@@ -426,6 +443,11 @@ def create_app(db_path=None):
         recent.append(now)
         login_attempts[source] = recent
         row = get_db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        config = security_config()
+        if config and config["login_lockdown"] and not (row and row["role"] == "admin"):
+            security_event("LOGIN_LOCKDOWN_BLOCK", "HIGH", row["id"] if row else None, {"reason": config["reason"] or "Emergency login lockdown"})
+            get_db().commit()
+            raise ApiError("Login is temporarily restricted by the security administrator", 423)
         ok = check_password_hash(row["password_hash"] if row else _DUMMY_HASH, password)
         if not (row and ok):
             security_event("LOGIN_FAILURE", "MEDIUM", metadata={"email_present": bool(email)})
@@ -1071,6 +1093,83 @@ def create_app(db_path=None):
             where="WHERE s.severity=?"; params.append(severity)
         rows=get_db().execute("SELECT s.id,s.event_type,s.severity,s.metadata,s.created_at,u.email actor_email FROM security_events s LEFT JOIN users u ON u.id=s.actor_user_id " + where + " ORDER BY s.id DESC LIMIT 200", params).fetchall()
         return jsonify({"events": [dict(r) for r in rows]})
+
+    @app.get("/api/admin/security/overview")
+    @admin_required(permission="security.read")
+    def admin_security_overview():
+        conn = get_db(); severity = request.args.get("severity", "").strip().upper(); query = request.args.get("q", "").strip()
+        if severity and severity not in ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"):
+            raise ApiError("Unknown severity filter", field="severity")
+        filters = []; args = []
+        if severity: filters.append("s.severity=?"); args.append(severity)
+        if query: filters.append("(s.event_type LIKE ? OR s.metadata LIKE ?)"); args.extend([f"%{query}%", f"%{query}%"])
+        where = (" WHERE " + " AND ".join(filters)) if filters else ""
+        counts = {row["severity"]: row["value"] for row in conn.execute("SELECT severity,COUNT(*) value FROM security_events GROUP BY severity")}
+        incident_counts = {row["status"]: row["value"] for row in conn.execute("SELECT status,COUNT(*) value FROM security_incidents GROUP BY status")}
+        events = conn.execute("SELECT s.id,s.event_type,s.severity,s.metadata,s.created_at,u.email actor_email FROM security_events s LEFT JOIN users u ON u.id=s.actor_user_id" + where + " ORDER BY s.id DESC LIMIT 100", args).fetchall()
+        daily = conn.execute("SELECT substr(created_at,1,10) label,COUNT(*) value FROM security_events WHERE created_at >= datetime('now','-30 days') GROUP BY label ORDER BY label").fetchall()
+        login = conn.execute("SELECT CASE WHEN event_type IN ('LOGIN_SUCCESS','ADMIN_CODE_SUCCESS') THEN 'Successful' ELSE 'Failed or blocked' END label,COUNT(*) value FROM security_events WHERE event_type LIKE 'LOGIN_%' OR event_type LIKE 'ADMIN_CODE_%' GROUP BY label").fetchall()
+        config = security_config()
+        return jsonify({
+            "scope": "LIVE SECURITY TELEMETRY",
+            "retention_days": 180,
+            "counts": {key: counts.get(key, 0) for key in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")},
+            "incident_counts": incident_counts,
+            "login_activity": [dict(row) for row in login],
+            "daily_volume": [dict(row) for row in daily],
+            "events": [dict(row) for row in events],
+            "config": {"login_lockdown": bool(config["login_lockdown"]), "registration_suspended": bool(config["registration_suspended"]), "reason": config["reason"], "updated_at": config["updated_at"]},
+        })
+
+    @app.get("/api/admin/security/incidents")
+    @admin_required(permission="security.read")
+    def admin_security_incidents():
+        status = request.args.get("status", "").strip().upper(); params=[]; where=""
+        if status:
+            if status not in ("NEW", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED"): raise ApiError("Unknown incident status", field="status")
+            where=" WHERE i.status=?"; params.append(status)
+        rows = get_db().execute("SELECT i.id,i.incident_id,i.event_id,i.severity,i.category,i.title,i.detection_reason,i.automated_response,i.status,i.created_at,i.updated_at,i.resolved_at,u.email assigned_email FROM security_incidents i LEFT JOIN users u ON u.id=i.assigned_to" + where + " ORDER BY i.id DESC LIMIT 100", params).fetchall()
+        return jsonify({"incidents": [dict(row) for row in rows]})
+
+    @app.post("/api/admin/security/incidents")
+    @admin_required(permission="security.write")
+    def admin_security_incident_create():
+        d=body(); event_id=d.get("event_id"); title=text(d,"title","Title",3,160); reason=text(d,"detection_reason","Detection reason",3,500); severity=str(d.get("severity","MEDIUM")).upper()
+        if not isinstance(event_id, int): raise ApiError("event_id must be an integer", field="event_id")
+        if severity not in ("LOW","MEDIUM","HIGH","CRITICAL"): raise ApiError("Unknown severity", field="severity")
+        event=get_db().execute("SELECT id,event_type FROM security_events WHERE id=?",(event_id,)).fetchone()
+        if not event: raise ApiError("Security event not found",404)
+        conn=get_db(); incident_no="INC-"+date.today().strftime("%Y%m%d")+"-"+secrets.token_hex(4).upper(); cur=conn.execute("INSERT INTO security_incidents(incident_id,event_id,severity,category,title,detection_reason,assigned_to) VALUES (?,?,?,?,?,?,?)",(incident_no,event_id,severity,event["event_type"].split("_",1)[0].title(),title,reason,current_user()["id"])); conn.execute("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)",(current_user()["id"],"CREATE_SECURITY_INCIDENT","security_incident",incident_no,json.dumps({"event_id":event_id}))); conn.commit(); return jsonify({"incident_id":incident_no,"id":cur.lastrowid,"status":"NEW"}),201
+
+    @app.patch("/api/admin/security/incidents/<int:incident_id>")
+    @admin_required(permission="security.write")
+    def admin_security_incident_update(incident_id):
+        d=body(); status=d.get("status"); note=d.get("note", "")
+        if status not in ("NEW", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED"): raise ApiError("Unknown incident status", field="status")
+        if note and (not isinstance(note,str) or not 3 <= len(note.strip()) <= 2000): raise ApiError("note must be 3-2000 characters", field="note")
+        conn=get_db(); row=conn.execute("SELECT id,incident_id FROM security_incidents WHERE id=?",(incident_id,)).fetchone()
+        if not row: raise ApiError("Incident not found",404)
+        conn.execute("UPDATE security_incidents SET status=?,updated_at=?,resolved_at=? WHERE id=?",(status,now_iso(),now_iso() if status in ("RESOLVED","CLOSED") else None,incident_id))
+        if note: conn.execute("INSERT INTO security_investigation_notes(incident_id,author_user_id,note) VALUES (?,?,?)",(incident_id,current_user()["id"],note.strip()))
+        conn.execute("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)",(current_user()["id"],"UPDATE_SECURITY_INCIDENT","security_incident",row["incident_id"],json.dumps({"status":status,"note_added":bool(note)}))); conn.commit(); return jsonify({"incident_id":row["incident_id"],"status":status})
+
+    @app.get("/api/admin/security/incidents/<int:incident_id>/notes")
+    @admin_required(permission="security.read")
+    def admin_security_incident_notes(incident_id):
+        rows=get_db().execute("SELECT n.id,n.note,n.created_at,u.email author_email FROM security_investigation_notes n LEFT JOIN users u ON u.id=n.author_user_id WHERE n.incident_id=? ORDER BY n.id",(incident_id,)).fetchall(); return jsonify({"notes":[dict(row) for row in rows]})
+
+    @app.get("/api/admin/security/config")
+    @admin_required(permission="security.read")
+    def admin_security_config():
+        config=security_config(); return jsonify({"login_lockdown":bool(config["login_lockdown"]),"registration_suspended":bool(config["registration_suspended"]),"reason":config["reason"],"updated_at":config["updated_at"]})
+
+    @app.patch("/api/admin/security/config")
+    @admin_required(permission="security.write")
+    def admin_security_config_update():
+        d=body(); lockdown=d.get("login_lockdown"); suspended=d.get("registration_suspended"); reason=text(d,"reason","Reason",3,500)
+        if not isinstance(lockdown,bool) or not isinstance(suspended,bool): raise ApiError("login_lockdown and registration_suspended must be boolean")
+        conn=get_db(); conn.execute("UPDATE security_config SET login_lockdown=?,registration_suspended=?,updated_by=?,reason=?,updated_at=? WHERE id=1",(int(lockdown),int(suspended),current_user()["id"],reason,now_iso()))
+        security_event("EMERGENCY_LOCKDOWN_ENABLED" if lockdown else "EMERGENCY_LOCKDOWN_DISABLED", "CRITICAL" if lockdown else "HIGH", current_user()["id"], {"reason":reason,"registration_suspended":suspended}); conn.execute("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)",(current_user()["id"],"UPDATE_SECURITY_CONFIG","security_config","1",json.dumps({"login_lockdown":lockdown,"registration_suspended":suspended}))); conn.commit(); return jsonify({"login_lockdown":lockdown,"registration_suspended":suspended,"reason":reason})
 
     @app.get("/api/admin/analytics")
     @admin_required
@@ -1818,6 +1917,10 @@ User message:
     @app.get("/admin/analytics")
     def admin_analytics_page():
         return send_from_directory(FRONTEND, "admin-analytics.html")
+
+    @app.get("/admin/security")
+    def admin_security_page():
+        return send_from_directory(FRONTEND, "admin-security.html")
 
     @app.get("/admin/<section>")
     def admin_section_page(section):
