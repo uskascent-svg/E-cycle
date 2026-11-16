@@ -165,3 +165,7 @@ no admin account exists; it never resets, deletes, or overwrites an existing acc
 Passwords are stored only as hashes. If an existing administrator password is forgotten,
 set a new value through the private Render environment and use an approved database/admin
 maintenance procedure; do not place credentials in source code, logs, or chat.
+For an authorized maintenance operator with access to the active database, the repository
+also includes `backend/reset_admin.py`. Set `ECYCLE_ADMIN_EMAIL`, `ECYCLE_ADMIN_PASSWORD`,
+and optionally `ECYCLE_DB` privately, then run `python reset_admin.py` from `backend/`.
+The command updates only an existing admin account and never prints the password.
