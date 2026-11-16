@@ -123,7 +123,7 @@ async function initNav() {
     };
     box.append(dash, schedule, out);
     if (currentUser.role === "admin" && links) {
-        const a = make("a", "Admin"); a.href = "admin.html"; links.append(a);
+        const a = make("a", "Admin"); a.href = "/admin/dashboard"; links.append(a);
     }
 }
 

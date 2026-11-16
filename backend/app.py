@@ -1811,6 +1811,10 @@ User message:
     def admin_dashboard_page():
         return send_from_directory(FRONTEND, "admin-dashboard.html")
 
+    @app.get("/admin/admin.html")
+    def legacy_admin_page_alias():
+        return redirect("/admin/dashboard", code=301)
+
     @app.get("/admin/analytics")
     def admin_analytics_page():
         return send_from_directory(FRONTEND, "admin-analytics.html")
