@@ -207,11 +207,19 @@ function handleSubmitEwaste(event) {
             $("recommendation").textContent = r.recommendation;
             $("guestNote").style.display = r.linked_to_account ? "none" : "block";
             $("trackLink").href = "track.html?id=" + encodeURIComponent(r.tracking_id);
+            window.latestSubmissionReceipt = { tracking_id: r.tracking_id, category: $("category").value, device_name: $("device").value, quantity: $("quantity").value, condition: $("condition").value, status: "SUBMITTED", submitted_at: new Date().toISOString() };
+            $("receiptButton").onclick = downloadSubmissionReceipt;
             $("submissionResult").classList.add("show");
             $("submissionResult").scrollIntoView({ behavior: "smooth" });
             event.target.reset();
         } catch (e) { showMessage(msg, e.message); }
     });
+}
+
+function downloadSubmissionReceipt() {
+    const r = window.latestSubmissionReceipt; if (!r) return;
+    const body = `E-CYCLE\nE-WASTE SUBMISSION RECEIPT\n\nTracking ID: ${r.tracking_id}\nDevice: ${r.device_name}\nCategory: ${r.category}\nQuantity: ${r.quantity} unit(s)\nCondition: ${String(r.condition).replaceAll("_", " ")}\nStatus: ${r.status}\nSubmitted: ${r.submitted_at}\n\nThis receipt confirms submission to the E-Cycle platform. It is not a collection, recycling, destruction or government certificate. A collection certificate is generated after the pickup is marked Completed.`;
+    const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([body], { type: "text/plain;charset=utf-8" })); link.download = `${r.tracking_id}-submission-receipt.txt`; link.click(); URL.revokeObjectURL(link.href);
 }
 
 /* ---------- track ---------- */
