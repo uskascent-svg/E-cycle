@@ -2,7 +2,7 @@
 
 Audit date: 17 November 2026  
 Repository: https://github.com/uskascent-svg/E-cycle  
-Latest repository commit: `8b5f870` (documentation); latest deployed application commit: `09bca7a`  
+Latest repository commit: `3f8da96`; latest deployed application commit: `3f8da96`  
 Deployment: Render (`https://e-cycle-xyv5.onrender.com`)
 
 ## Executive result
@@ -44,6 +44,7 @@ The application is operationally verified for the tested workflows and the lates
 - User management and role updates.
 - Audit logs, security events and exports.
 - Analytics and demo-data separation.
+- Executive dashboard separated from detailed operations at `/admin/dashboard` and `/admin/operations`.
 
 ### Analytics
 
