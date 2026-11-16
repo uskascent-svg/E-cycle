@@ -53,6 +53,24 @@ function prettyDate(iso) {
 }
 function badge(text) { return make("span", text, "badge"); }
 
+/* Accessible replacement for browser prompt dialogs in operational workflows. */
+function askText(label, options = {}) {
+    return new Promise(resolve => {
+        const dialog = document.createElement("dialog");
+        dialog.style.cssText = "border:0;border-radius:14px;padding:22px;max-width:420px;box-shadow:0 12px 40px #0004";
+        const title = make("h3", options.title || "Confirm action");
+        const text = make("p", label);
+        const input = make("textarea"); input.rows = 4; input.maxLength = options.maxLength || 1000; input.required = options.required !== false; input.style.cssText = "width:100%;margin:10px 0;padding:10px";
+        const cancel = make("button", "Cancel", "btn btn-outline"); cancel.type = "button";
+        const submit = make("button", options.submit || "Continue", "btn btn-primary"); submit.type = "button"; submit.style.marginLeft = "8px";
+        const actions = make("div"); actions.style.textAlign = "right"; actions.append(cancel, submit); dialog.append(title, text, input, actions); document.body.append(dialog);
+        const finish = value => { if (dialog.open) dialog.close(); dialog.remove(); resolve(value); };
+        cancel.onclick = () => finish(null); submit.onclick = () => { const value = input.value.trim(); if (options.required !== false && !value) { input.focus(); return; } finish(value); };
+        dialog.addEventListener("cancel", event => { event.preventDefault(); finish(null); }, { once: true });
+        dialog.showModal(); input.focus();
+    });
+}
+
 /* One shared assistant surface. It is deliberately server-backed; if Gemini
    is not configured the API returns a truthful setup/unavailable message. */
 function mountAssistant() {
@@ -133,14 +151,14 @@ async function loadDistributorWorkspace() {
 }
 
 async function decideDistributorJob(id, decision) {
-    const reason = decision === "DECLINED" ? window.prompt("Why are you declining this assignment?") : "";
+    const reason = decision === "DECLINED" ? await askText("Why are you declining this assignment?", { title: "Decline assignment", submit: "Decline" }) : "";
     if (decision === "DECLINED" && !reason) return;
     try { await api(`/distributor/assignments/${id}/decision`, { method: "POST", body: { decision, reason } }); loadDistributorWorkspace(); }
     catch (e) { showMessage($("distributorMessage"), e.message); }
 }
 
 async function completeDistributorJob(id, quantity) {
-    const note = window.prompt("Enter collection evidence or acknowledgement details:");
+    const note = await askText("Enter collection evidence or acknowledgement details:", { title: "Record collection", submit: "Save collection" });
     if (!note) return;
     try { await api(`/distributor/assignments/${id}/complete`, { method: "POST", body: { collected_quantity: quantity, evidence_note: note } }); loadDistributorWorkspace(); }
     catch (e) { showMessage($("distributorMessage"), e.message); }
@@ -347,7 +365,7 @@ async function loadAdmin() {
                 const b = make("button", "Mark " + prettyStatus(s.next_status), "btn btn-light");
                 b.type = "button";
                 b.onclick = async () => {
-                    const note = window.prompt("Optional update note (leave blank for the default note):", "");
+                    const note = await askText("Optional update note (leave blank for the default note):", { title: "Update submission status", required: false, submit: "Update" });
                     if (note === null) return;
                     b.disabled = true;
                     try {
