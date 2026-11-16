@@ -772,7 +772,7 @@ def create_app(db_path=None):
             for record in records:
                 details = record["details"]
                 record["reference"] = record["record_id"]; record["tracking_id"] = record["record_id"]; record["name"] = record["title"]; record["category"] = details.get("Category") or details.get("Item category") or record["record_type"]; record["locality"] = details.get("Pickup address") or details.get("Address") or details.get("Destination") or "Demo operations"; record["city"] = record["locality"]; record["next_status"] = next_status.get(record["status"]) if record["record_type"] == "E-waste submission" else None
-            return jsonify({"demo": True, "label": "100 DETAILED SAMPLE RECORDS — ISOLATED FROM LIVE DATA", "records": records, "submissions": records})
+            return jsonify({"demo": True, "label": f"{len(records)} DETAILED SAMPLE RECORDS — ISOLATED FROM LIVE DATA", "records": records, "submissions": records})
         finally:
             conn.close()
 

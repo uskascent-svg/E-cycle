@@ -166,6 +166,14 @@ def reset(conn):
             date_value = payload.get("Submission date") or payload.get("Pickup date") or payload.get("Registration") or payload.get("Event timestamp") or payload.get("Received date") or "15 November 2026"
             status = payload.get("Status") or payload.get("Operational status") or payload.get("Processing status") or "Recorded"
             details.append((payload["id"], type_names[kind], payload["title"], status, date_value, json.dumps(payload, ensure_ascii=False)))
+    # The presentation request expands distributors from 8 to 30. These extra
+    # fictional partners use the same complete fields as the supplied records.
+    cities = (("Pune", "411001"), ("Nashik", "422001"), ("Mumbai", "400072"), ("Nagpur", "440010"), ("Kolhapur", "416003"), ("Solapur", "413001"), ("Jalgaon", "425001"))
+    partner_types = ("Collection and transportation", "Collection and logistics", "E-waste collection", "Collection and sorting")
+    for i in range(9, 31):
+        city, pin = cities[(i - 9) % len(cities)]
+        payload = {"Distributor ID": f"DST{i:03d}", "Contact person": f"Demo Coordinator {i:02d}", "Email": f"partner{i:02d}@demo.ecycle.local", "Phone": f"+91-980000{1000+i}", "Address": f"{900+i} Circular Road, {city}, Maharashtra – {pin}", "Service cities": f"{city}, Maharashtra", "Partner type": partner_types[(i - 9) % len(partner_types)], "Registration": f"{(i % 15) + 1:02d} November 2026", "Verification": "Verified (simulated)" if i % 4 else "Under Review", "Daily capacity": f"{100 + i * 15} kg", "Completed pickups": str(i % 4), "Pending assignments": str((i % 3) + 1), "Performance rating": f"{4.3 + (i % 6) / 10:.1f}/5 (demo)", "Availability": "Active", "Operating hours": "09:00 AM–06:00 PM", "Demo": "Yes"}
+        details.append((payload["Distributor ID"], "Distributor", f"Demo Partner {i:02d}", "Active", "15 November 2026", json.dumps(payload, ensure_ascii=False)))
     for i in range(1, 11):
         sub = next(item for item in demo_details.DETAILS["SUB"] if item["id"] == f"SUB{i:03d}")
         details.append((f"TASK{i:03d}", "Pending task", f"Review {sub['title']}", "Pending", sub.get("Submission date", "15 November 2026"), json.dumps({"Task ID":f"TASK{i:03d}","Submission ID":sub["id"],"Task":"Verify, schedule or process demo submission","Owner":"Demo Operations","Status":"Pending","Demo":"Yes"}, ensure_ascii=False)))
