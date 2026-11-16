@@ -387,6 +387,21 @@ async function loadAdmin() {
     }
 }
 
+async function loadLegacyDemoPanels() {
+    const host = $("legacyDemoPanels");
+    if (!host) return;
+    try {
+        const data = await api("/admin/demo/inputs");
+        const groups = {};
+        data.records.forEach(record => (groups[record.record_type] ||= []).push(record));
+        const stats = $("legacyDemoStats"); stats.textContent = "";
+        [["Users", "User"], ["Submissions", "E-waste submission"], ["Pickups", "Completed pickup"], ["Distributors", "Distributor"], ["Facilities", "Facility"], ["Inventory", "Collected inventory"], ["Security alerts", "Security alert"], ["Pending tasks", "Pending task"]].forEach(([label, type]) => { const card = make("div", undefined, "stat"); card.append(make("small", "SAMPLE " + label), make("strong", String(groups[type]?.length || 0))); stats.append(card); });
+        host.textContent = "";
+        const configs = [["Sample users", "User", ["record_id", "title", "details.Email", "details.Status"]], ["Sample submissions", "E-waste submission", ["record_id", "title", "details.Brand", "status"]], ["Sample pickups", "Completed pickup", ["record_id", "title", "details.Distributor", "status"]], ["Sample distributors", "Distributor", ["record_id", "title", "details.Service cities", "details.Availability"]], ["Sample facilities", "Facility", ["record_id", "title", "details.Operational status", "details.Daily processing capacity"]], ["Sample inventory", "Collected inventory", ["record_id", "title", "details.Destination", "details.Processing status"]], ["Sample security alerts", "Security alert", ["record_id", "title", "details.Severity", "status"]]];
+        configs.forEach(([title, type, fields]) => { const section = make("section", undefined, "panel"); section.append(make("h3", title + " · SAMPLE")); const wrap = make("div"); wrap.style.overflowX = "auto"; const table = make("table", undefined, "table"); const head = make("thead"), hr = make("tr"); fields.forEach(field => hr.append(make("th", field.replace("details.", "")))); head.append(hr); const body = make("tbody"); (groups[type] || []).forEach(row => { const tr = make("tr"); fields.forEach(field => { const parts = field.split("."); const value = parts.length === 2 ? row[parts[0]]?.[parts[1]] : row[parts[0]]; tr.append(make("td", value ?? "—")); }); body.append(tr); }); table.append(head, body); wrap.append(table); section.append(wrap); host.append(section); });
+    } catch (e) { host.textContent = "Unable to load sample operational data: " + e.message; }
+}
+
 async function handleAdminCreateDrive(event) {
     await withBusy(event, async () => {
         const msg = $("driveCreateMessage");
@@ -433,6 +448,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if ($("impTotal")) loadImpact();
     if ($("adminRows")) {
         loadAdmin();
+        loadLegacyDemoPanels();
         $("adminStatusFilter")?.addEventListener("change", loadAdmin);
         $("adminRefresh")?.addEventListener("click", loadAdmin);
         const dateInput = $("driveDate");
