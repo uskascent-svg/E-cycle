@@ -155,3 +155,13 @@ python -m unittest discover -s backend/tests -v
 The admin portal uses the existing Flask session and admin authorization middleware. It is
 not secured by frontend visibility alone: every new admin endpoint checks authorization on
 the server.
+
+### Admin bootstrap and password recovery
+
+Render runs `python backend/init_db.py` as an idempotent pre-deploy command. For a new
+database, set `ECYCLE_ADMIN_EMAIL` and `ECYCLE_ADMIN_PASSWORD` as private Render
+environment variables before the first deploy. The initializer creates the admin only when
+no admin account exists; it never resets, deletes, or overwrites an existing account.
+Passwords are stored only as hashes. If an existing administrator password is forgotten,
+set a new value through the private Render environment and use an approved database/admin
+maintenance procedure; do not place credentials in source code, logs, or chat.

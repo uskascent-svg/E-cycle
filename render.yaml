@@ -4,6 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r backend/requirements.txt
+    preDeployCommand: python backend/init_db.py
     startCommand: gunicorn --chdir backend --workers 1 --threads 4 --timeout 60 wsgi:app
     healthCheckPath: /api/health
     envVars:
@@ -14,4 +15,8 @@ services:
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
       - key: GEMINI_API_KEY
+        sync: false
+      - key: ECYCLE_ADMIN_EMAIL
+        sync: false
+      - key: ECYCLE_ADMIN_PASSWORD
         sync: false
