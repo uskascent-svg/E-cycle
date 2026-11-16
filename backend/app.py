@@ -1908,7 +1908,7 @@ User message:
 
     @app.get("/admin/dashboard")
     def admin_dashboard_page():
-        return send_from_directory(FRONTEND, "admin-dashboard.html")
+        return send_from_directory(FRONTEND, "admin-home.html")
 
     @app.get("/admin/admin.html")
     def legacy_admin_page_alias():
@@ -1924,7 +1924,7 @@ User message:
 
     @app.get("/admin/<section>")
     def admin_section_page(section):
-        if section not in {"users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
+        if section not in {"operations", "users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
             return not_found(None)
         return send_from_directory(FRONTEND, "admin-dashboard.html")
 
