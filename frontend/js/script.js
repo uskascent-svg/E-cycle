@@ -457,6 +457,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (typeof loadVisualAnalytics === "function") loadVisualAnalytics();
     }
     if (window.location.pathname === "/admin/dashboard") {
+        const adminLinks = document.querySelector(".nav-links");
+        if (adminLinks && !adminLinks.querySelector('a[href="/admin/operations"]')) {
+            const operationsLink = make("a", "Operations");
+            operationsLink.href = "/admin/operations";
+            adminLinks.insertBefore(operationsLink, adminLinks.querySelector('a[href="/admin/analytics"]'));
+        }
         document.querySelectorAll(".home-card span").forEach((el) => { el.textContent = "combined recorded activity"; });
         const notice = document.querySelector(".home-notice");
         if (notice) notice.textContent = "Combined platform view. Metrics include demonstration records and are not independently verified real-world transactions.";
