@@ -331,4 +331,11 @@ CREATE TABLE IF NOT EXISTS collection_forecasts (
     UNIQUE(forecast_month, method)
 );
 
+CREATE TABLE IF NOT EXISTS platform_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 INSERT OR IGNORE INTO schema_migrations(version) VALUES ('2026-11-platform-upgrade');

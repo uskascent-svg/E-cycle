@@ -563,8 +563,9 @@ def create_app(db_path=None):
         dist = {r["recommendation"]: r["n"] for r in conn.execute(
             "SELECT recommendation, COUNT(*) AS n FROM submissions GROUP BY recommendation")}
         collected = one("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')")
-        recovery_rate = float(os.environ.get("ECYCLE_ESTIMATED_RECOVERY_RATE", "0.70"))
-        co2_factor = float(os.environ.get("ECYCLE_ESTIMATED_CO2_KG_PER_ITEM", "12"))
+        setting = lambda key, fallback: (conn.execute("SELECT setting_value FROM platform_settings WHERE setting_key=?", (key,)).fetchone() or {"setting_value": fallback})["setting_value"]
+        recovery_rate = float(setting("estimated_recovery_rate", os.environ.get("ECYCLE_ESTIMATED_RECOVERY_RATE", "0.70")))
+        co2_factor = float(setting("estimated_co2_kg_per_item", os.environ.get("ECYCLE_ESTIMATED_CO2_KG_PER_ITEM", "12")))
         return jsonify({
             "total_submissions": one("SELECT COUNT(*) FROM submissions"),
             "collected_items": collected,
@@ -681,6 +682,8 @@ def create_app(db_path=None):
     def admin_summary():
         conn = get_db(); count = lambda sql, args=(): conn.execute(sql, args).fetchone()[0]
         monthly = conn.execute("SELECT substr(created_at,1,7) month, COALESCE(SUM(quantity),0) quantity FROM submissions GROUP BY month ORDER BY month DESC LIMIT 12").fetchall()
+        activity = conn.execute("SELECT action,entity_type,entity_id,created_at FROM audit_logs ORDER BY id DESC LIMIT 10").fetchall()
+        impact_row = conn.execute("SELECT COALESCE(SUM(quantity),0) collected FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()
         return jsonify({
             "users": count("SELECT COUNT(*) FROM users WHERE role='user'"),
             "submissions": count("SELECT COUNT(*) FROM submissions"),
@@ -691,6 +694,9 @@ def create_app(db_path=None):
             "facilities": count("SELECT COUNT(*) FROM facilities WHERE verification_status='VERIFIED'"),
             "collected_quantity": conn.execute("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()[0],
             "unread_security": count("SELECT COUNT(*) FROM security_events WHERE severity IN ('HIGH','CRITICAL') AND created_at >= datetime('now','-30 days')"),
+            "pending_tasks": count("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED')") + count("SELECT COUNT(*) FROM reports WHERE status IN ('SUBMITTED','UNDER_REVIEW','INVESTIGATING')"),
+            "recent_activity": [dict(r) for r in activity],
+            "environmental": {"collected_items": impact_row["collected"]},
             "monthly": [dict(r) for r in monthly],
         })
 
@@ -789,14 +795,65 @@ def create_app(db_path=None):
     @app.get("/api/admin/analytics")
     @admin_required
     def admin_analytics():
-        conn=get_db(); rows=conn.execute("SELECT substr(created_at,1,7) month, SUM(quantity) quantity, COUNT(*) submissions FROM submissions GROUP BY month ORDER BY month").fetchall()
+        conn=get_db(); start=request.args.get("from", "").strip(); end=request.args.get("to", "").strip()
+        for value, label in ((start, "from"), (end, "to")):
+            if value:
+                try: date.fromisoformat(value)
+                except ValueError: raise ApiError(label + " must be YYYY-MM-DD", field=label)
+        where=[]; args=[]
+        if start: where.append("created_at >= ?"); args.append(start + "T00:00:00Z")
+        if end: where.append("created_at <= ?"); args.append(end + "T23:59:59Z")
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows=conn.execute("SELECT substr(created_at,1,7) month, SUM(quantity) quantity, COUNT(*) submissions FROM submissions" + clause + " GROUP BY month ORDER BY month", args).fetchall()
         values=[r["quantity"] or 0 for r in rows]; forecast=round(sum(values[-3:])/max(1,len(values[-3:])),2) if values else 0
-        return jsonify({"actual": [dict(r) for r in rows], "forecast": {"next_month_quantity": forecast, "method": "three-month moving average", "based_on_months": min(3,len(values)), "is_estimate": True}})
+        forecast_month = (date.today().replace(day=1) + timedelta(days=32)).replace(day=1).isoformat()
+        conn.execute("INSERT INTO collection_forecasts(forecast_month,predicted_quantity,method,based_on_months) VALUES (?,?,?,?) ON CONFLICT(forecast_month,method) DO UPDATE SET predicted_quantity=excluded.predicted_quantity,based_on_months=excluded.based_on_months,created_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')", (forecast_month, forecast, "three-month moving average", min(3,len(values))))
+        capacity = conn.execute("SELECT d.id,u.name,d.capacity,COUNT(a.id) active_assignments FROM distributors d JOIN users u ON u.id=d.user_id LEFT JOIN assignments a ON a.distributor_id=d.id AND a.status IN ('OFFERED','ACCEPTED','RESCHEDULE_REQUESTED') GROUP BY d.id ORDER BY active_assignments DESC").fetchall()
+        facilities = conn.execute("SELECT f.id,f.name,f.capacity,COALESCE(SUM(i.quantity),0) inventory_quantity FROM facilities f LEFT JOIN facility_inventory i ON i.facility_id=f.id AND i.status IN ('RECEIVED','IN_PROCESS') GROUP BY f.id ORDER BY inventory_quantity DESC").fetchall()
+        conn.commit()
+        bottlenecks = [{"type":"distributor","name":r["name"],"active":r["active_assignments"],"capacity":r["capacity"]} for r in capacity if r["active_assignments"] >= r["capacity"]]
+        bottlenecks += [{"type":"facility","name":r["name"],"inventory":r["inventory_quantity"],"capacity":r["capacity"]} for r in facilities if r["inventory_quantity"] >= r["capacity"]]
+        return jsonify({"actual": [dict(r) for r in rows], "forecast": {"next_month_quantity": forecast, "method": "three-month moving average", "based_on_months": min(3,len(values)), "is_estimate": True}, "distributor_capacity": [dict(r) for r in capacity], "facility_processing": [dict(r) for r in facilities], "bottlenecks": bottlenecks, "filters": {"from": start or None, "to": end or None}})
+
+    @app.get("/api/admin/settings")
+    @admin_required(permission="settings.write")
+    def admin_settings():
+        conn = get_db()
+        values = {"estimated_recovery_rate": os.environ.get("ECYCLE_ESTIMATED_RECOVERY_RATE", "0.70"), "estimated_co2_kg_per_item": os.environ.get("ECYCLE_ESTIMATED_CO2_KG_PER_ITEM", "12")}
+        for row in conn.execute("SELECT setting_key,setting_value FROM platform_settings WHERE setting_key IN ('estimated_recovery_rate','estimated_co2_kg_per_item')").fetchall():
+            values[row["setting_key"]] = row["setting_value"]
+        return jsonify({"settings": values, "secrets_exposed": False, "note": "Values are planning estimates and are not scientific verification."})
+
+    @app.patch("/api/admin/settings")
+    @admin_required(permission="settings.write")
+    def admin_settings_update():
+        d = body(); conn = get_db(); updates = {}
+        if "estimated_recovery_rate" in d:
+            value = d["estimated_recovery_rate"]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                raise ApiError("estimated_recovery_rate must be between 0 and 1", field="estimated_recovery_rate")
+            updates["estimated_recovery_rate"] = str(float(value))
+        if "estimated_co2_kg_per_item" in d:
+            value = d["estimated_co2_kg_per_item"]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10000:
+                raise ApiError("estimated_co2_kg_per_item must be between 0 and 10000", field="estimated_co2_kg_per_item")
+            updates["estimated_co2_kg_per_item"] = str(float(value))
+        if not updates: raise ApiError("No supported settings supplied")
+        for key, value in updates.items():
+            conn.execute("INSERT INTO platform_settings(setting_key,setting_value,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_by=excluded.updated_by,updated_at=excluded.updated_at", (key, value, current_user()["id"], now_iso()))
+        security_event("ADMIN_SETTINGS_UPDATE", "MEDIUM", current_user()["id"], {"keys": sorted(updates)})
+        conn.commit()
+        return jsonify({"updated": sorted(updates), "settings": updates})
 
     @app.get("/api/admin/collection-map")
     @admin_required
     def admin_collection_map():
-        rows=get_db().execute("SELECT tracking_id,location,status,quantity,created_at FROM submissions WHERE location IS NOT NULL ORDER BY id DESC LIMIT 500").fetchall()
+        status=request.args.get("status", "").strip().upper(); area=request.args.get("area", "").strip(); limit=min(max(int(request.args.get("limit", 500)), 1), 500)
+        where=["location IS NOT NULL"]; args=[]
+        if status: where.append("status=?"); args.append(status)
+        if area: where.append("lower(location) LIKE lower(?)"); args.append("%" + area + "%")
+        args.append(limit)
+        rows=get_db().execute("SELECT tracking_id,location,status,quantity,created_at FROM submissions WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT ?", args).fetchall()
         return jsonify({"coordinates_available": False, "privacy_note": "Exact coordinates are not collected; locations are shown as operational text.", "locations": [dict(r) for r in rows]})
 
     @app.get("/api/qr/<token>")
@@ -1187,6 +1244,13 @@ def create_app(db_path=None):
         rows = get_db().execute("SELECT s.tracking_id,s.category,s.device_name,s.quantity,s.recommendation,s.status,s.created_at,s.updated_at,u.email AS owner_email FROM submissions s LEFT JOIN users u ON u.id=s.user_id ORDER BY s.id").fetchall()
         out = io.StringIO(); writer = csv.writer(out); writer.writerow(["tracking_id","category","device_name","quantity","recommendation","status","created_at","updated_at","owner_email"])
         writer.writerows([tuple(r) for r in rows]); response = app.make_response(out.getvalue()); response.headers["Content-Type"] = "text/csv; charset=utf-8"; response.headers["Content-Disposition"] = 'attachment; filename="ecycle-submissions.csv"'; return response
+
+    @app.get("/api/admin/export/security")
+    @admin_required(permission="security.read")
+    def export_security():
+        rows = get_db().execute("SELECT event_type,severity,actor_user_id,ip_hash,metadata,created_at FROM security_events ORDER BY id").fetchall()
+        out = io.StringIO(); writer = csv.writer(out); writer.writerow(["event_type","severity","actor_user_id","ip_hash","metadata","created_at"]); writer.writerows([tuple(r) for r in rows])
+        response = app.make_response(out.getvalue()); response.headers["Content-Type"] = "text/csv; charset=utf-8"; response.headers["Content-Disposition"] = 'attachment; filename="ecycle-security-events.csv"'; return response
 
     @app.post("/api/admin/certificates")
     @admin_required

@@ -51,6 +51,9 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(admin.get("/api/admin/analytics").status_code, 200)
         self.assertEqual(admin.get("/api/admin/security-events").status_code, 200)
         self.assertEqual(admin.get("/api/admin/collection-map").status_code, 200)
+        self.assertEqual(admin.get("/api/admin/analytics?from=2026-01-01&to=2026-12-31").status_code, 200)
+        self.assertEqual(admin.get("/api/admin/settings").status_code, 200)
+        self.assertEqual(admin.patch("/api/admin/settings", json={"estimated_recovery_rate": 0.8}).status_code, 200)
 
     def test_rbac_user_activity_and_csrf_origin_guard(self):
         admin = self.admin()
@@ -66,7 +69,7 @@ class UpgradeTests(unittest.TestCase):
         conn = db.connect(self.path)
         marker = conn.execute("SELECT version FROM schema_migrations WHERE version=?", ("2026-11-platform-upgrade",)).fetchone()
         self.assertIsNotNone(marker)
-        for table in ("qr_tracking", "green_wallets", "facility_inventory", "security_events", "collection_forecasts"):
+        for table in ("qr_tracking", "green_wallets", "facility_inventory", "security_events", "collection_forecasts", "platform_settings"):
             self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
         conn.close()
 
