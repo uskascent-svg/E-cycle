@@ -1922,6 +1922,10 @@ User message:
     def admin_security_page():
         return send_from_directory(FRONTEND, "admin-security.html")
 
+    @app.get("/admin/operations")
+    def admin_operations_page():
+        return send_from_directory(FRONTEND, "admin-dashboard.html")
+
     @app.get("/admin/<section>")
     def admin_section_page(section):
         if section not in {"operations", "users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
