@@ -1095,6 +1095,24 @@ def create_app(db_path=None):
         bottlenecks += [{"type":"facility","name":r["name"],"inventory":r["inventory_quantity"],"capacity":r["capacity"]} for r in facilities if r["inventory_quantity"] >= r["capacity"]]
         return jsonify({"actual": [dict(r) for r in rows], "forecast": {"next_month_quantity": forecast, "method": "three-month moving average", "based_on_months": min(3,len(values)), "is_estimate": True}, "distributor_capacity": [dict(r) for r in capacity], "facility_processing": [dict(r) for r in facilities], "bottlenecks": bottlenecks, "filters": {"from": start or None, "to": end or None}})
 
+    @app.get("/api/admin/analytics/visual")
+    @admin_required
+    def admin_visual_analytics():
+        conn = get_db(); start = request.args.get("from", "").strip(); end = request.args.get("to", "").strip()
+        for value, label in ((start, "from"), (end, "to")):
+            if value:
+                try: date.fromisoformat(value)
+                except ValueError: raise ApiError(label + " must be YYYY-MM-DD", field=label)
+        where = []; args = []
+        if start: where.append("created_at >= ?"); args.append(start + "T00:00:00Z")
+        if end: where.append("created_at <= ?"); args.append(end + "T23:59:59Z")
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        one = lambda sql, values=(): conn.execute(sql, values).fetchone()[0]
+        rows = lambda sql, values=(): [dict(r) for r in conn.execute(sql, values).fetchall()]
+        total = one("SELECT COUNT(*) FROM submissions" + clause, args); quantity = one("SELECT COALESCE(SUM(quantity),0) FROM submissions" + clause, args)
+        completed = one("SELECT COUNT(*) FROM assignments WHERE status='COMPLETED'"); pending = one("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED','COLLECTION_SCHEDULED')")
+        return jsonify({"scope": "LIVE OPERATIONAL DATA", "privacy": "Aggregate analytics only; no personal records, addresses or map data are returned.", "kpis": {"submissions": total, "completed_pickups": completed, "pending_requests": pending, "items_collected": one("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')")}, "trends": rows("SELECT substr(created_at,1,7) label,COUNT(*) submissions,COALESCE(SUM(quantity),0) quantity FROM submissions" + clause + " GROUP BY label ORDER BY label", args), "status": rows("SELECT status label,COUNT(*) value FROM submissions" + clause + " GROUP BY status ORDER BY status", args), "categories": rows("SELECT category label,COUNT(*) value FROM submissions" + clause + " GROUP BY category ORDER BY value DESC", args), "conditions": rows("SELECT device_condition label,COUNT(*) value FROM submissions" + clause + " GROUP BY device_condition ORDER BY value DESC", args), "pickup_status": rows("SELECT status label,COUNT(*) value FROM assignments GROUP BY status ORDER BY status"), "facility_processing": rows("SELECT outcome label,COUNT(*) value FROM processing_records GROUP BY outcome ORDER BY value DESC"), "estimate": {"items_collected": quantity, "note": "Recorded quantity; environmental benefits require validated factors and are not certified."}})
+
     @app.get("/api/admin/settings")
     @admin_required(permission="settings.write")
     def admin_settings():
@@ -1764,6 +1782,10 @@ User message:
     @app.get("/admin/dashboard")
     def admin_dashboard_page():
         return send_from_directory(FRONTEND, "admin-dashboard.html")
+
+    @app.get("/admin/analytics")
+    def admin_analytics_page():
+        return send_from_directory(FRONTEND, "admin-analytics.html")
 
     @app.get("/admin/<section>")
     def admin_section_page(section):
