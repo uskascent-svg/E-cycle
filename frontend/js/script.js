@@ -330,12 +330,12 @@ async function loadDrives() {
 async function loadImpact() {
     try {
         const d = await api("/impact");
-        $("impTotal").textContent = d.total_submissions;
-        $("impCollected").textContent = d.collected_items;
-        $("impParticipants").textContent = d.community_participants;
-        $("impDrives").textContent = d.completed_drives;
+        $("impTotal").textContent = Number(d.total_submissions || 0) + Number(d.demo_total_submissions || 0);
+        $("impCollected").textContent = Number(d.collected_items || 0) + Number(d.demo_collected_items || 0);
+        $("impParticipants").textContent = Number(d.community_participants || 0) + Number(d.demo_community_participants || 0);
+        $("impDrives").textContent = Number(d.completed_drives || 0) + Number(d.demo_completed_drives || 0);
         if ($("impactDataLabel")) $("impactDataLabel").textContent = `${d.data_label || "Database-backed impact data"} · ${d.demo_records || 0} sample records included.`;
-        const n = d.distribution;
+        const n = Object.fromEntries(["reuse", "repair", "recycle", "specialized"].map(k => [k, Number(d.distribution?.[k] || 0) + Number(d.demo_distribution?.[k] || 0)]));
         const count = k => n[k] + (n[k] === 1 ? " submission" : " submissions");
         $("distReuse").textContent = count("reuse");
         $("distRepair").textContent = count("repair");

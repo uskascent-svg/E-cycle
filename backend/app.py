@@ -650,20 +650,25 @@ def create_app(db_path=None):
         demo_collected = sum(int(r["details"].get("Quantity", 0)) for r in demo_inventory)
         demo_dist = {"reuse": sum("Reusable" in r["details"].get("Environmental category", "") for r in demo_subs), "repair": sum("Refurbishment" in r["details"].get("Environmental category", "") for r in demo_subs), "recycle": sum("recycling" in r["details"].get("Environmental category", "").lower() or "recovery" in r["details"].get("Environmental category", "").lower() for r in demo_subs), "specialized": sum("battery" in r["details"].get("Environmental category", "").lower() for r in demo_subs)}
         return jsonify({
-            "total_submissions": one("SELECT COUNT(*) FROM submissions") + len(demo_subs),
-            "collected_items": collected + demo_collected,
-            "estimated_material_recovery": round((collected + demo_collected) * recovery_rate, 2),
-            "estimated_landfill_diversion": collected + demo_collected,
-            "estimated_co2e_savings_kg": round((collected + demo_collected) * co2_factor, 2),
+            "total_submissions": one("SELECT COUNT(*) FROM submissions"),
+            "collected_items": collected,
+            "estimated_material_recovery": round(collected * recovery_rate, 2),
+            "estimated_landfill_diversion": collected,
+            "estimated_co2e_savings_kg": round(collected * co2_factor, 2),
             "estimate_assumptions": {
                 "recovery_rate": recovery_rate,
                 "co2_kg_per_item": co2_factor,
                 "warning": "Planning estimates only; replace with verified weight-based lifecycle factors before public claims."
             },
-            "community_participants": one("SELECT COUNT(DISTINCT user_id) FROM drive_participants") + sum(r["record_type"] == "User" for r in demo_records),
-            "completed_drives": one("SELECT COUNT(*) FROM drives WHERE drive_date < ?", date.today().isoformat()) + 3,
+            "community_participants": one("SELECT COUNT(DISTINCT user_id) FROM drive_participants"),
+            "completed_drives": one("SELECT COUNT(*) FROM drives WHERE drive_date < ?", date.today().isoformat()),
             "data_label": "LIVE + SAMPLE DEMONSTRATION DATA",
             "demo_records": len(demo_records),
+            "demo_total_submissions": len(demo_subs),
+            "demo_collected_items": demo_collected,
+            "demo_community_participants": sum(r["record_type"] == "User" for r in demo_records),
+            "demo_completed_drives": 3,
+            "demo_distribution": demo_dist,
             "distribution": {
                 "reuse": dist.get(rules.RECOMMENDATIONS["working"], 0) + demo_dist["reuse"],
                 "repair": dist.get(rules.RECOMMENDATIONS["partially_working"], 0) + demo_dist["repair"],
