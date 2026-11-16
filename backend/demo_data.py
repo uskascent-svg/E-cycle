@@ -6,7 +6,10 @@ The nine data tables contain exactly 100 rows in total:
 10 processing records, 10 certificates, 5 drives, and 5 notifications.
 The demo_controls row is configuration, not a demo record.
 """
+import json
 from datetime import datetime, timedelta, timezone
+
+import demo_details
 
 
 CITIES = [
@@ -106,6 +109,15 @@ def create_schema(conn):
         message TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS demo_detail_records (
+        record_id TEXT PRIMARY KEY,
+        record_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT,
+        created_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        is_demo INTEGER NOT NULL DEFAULT 1 CHECK (is_demo = 1)
+    );
     """)
 
 
@@ -118,6 +130,7 @@ def reset(conn):
     for table in ("demo_notifications", "demo_drives", "demo_certificates", "demo_processing", "demo_assignments", "demo_pickups", "demo_submissions", "demo_facilities", "demo_centres"):
         conn.execute("DELETE FROM " + table)
     conn.execute("UPDATE demo_controls SET enabled=1,feed_running=1,feed_cursor=0,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=1")
+    conn.execute("DELETE FROM demo_detail_records")
 
     centres = [(i + 1, f"E-Cycle {city} Collection Centre", city, lat, lon, "ACTIVE") for i, (city, _, lat, lon) in enumerate(CITIES)]
     facilities = [(i + 1, f"{city} Circular Recovery Facility", city, lat + 0.012, lon + 0.009, 500 + i * 125, "VERIFIED") for i, (city, _, lat, lon) in enumerate(CITIES)]
@@ -145,6 +158,18 @@ def reset(conn):
     notifications = [(i + 1, event, f"DEMO: {message}", _time(90 + i)) for i, (event, message) in enumerate((("SUBMISSION_RECEIVED", "New demonstration submission received."), ("PICKUP_SCHEDULED", "Demonstration pickup scheduled."), ("DISTRIBUTOR_ASSIGNED", "Demonstration distributor assigned."), ("PROCESSING_COMPLETED", "Demonstration recycling process completed."), ("CERTIFICATE_ISSUED", "Demonstration certificate generated.")))]
     conn.executemany("INSERT INTO demo_drives VALUES (?,?,?,?,?,?,?)", drives)
     conn.executemany("INSERT INTO demo_notifications VALUES (?,?,?,?)", notifications)
+    details = []
+    type_names = {"USR":"User", "SUB":"E-waste submission", "PCK":"Completed pickup", "DST":"Distributor", "FAC":"Facility", "COL":"Collected inventory", "ALT":"Security alert"}
+    for kind, values in demo_details.DETAILS.items():
+        for value in values:
+            payload = dict(value)
+            date_value = payload.get("Submission date") or payload.get("Pickup date") or payload.get("Registration") or payload.get("Event timestamp") or payload.get("Received date") or "15 November 2026"
+            status = payload.get("Status") or payload.get("Operational status") or payload.get("Processing status") or "Recorded"
+            details.append((payload["id"], type_names[kind], payload["title"], status, date_value, json.dumps(payload, ensure_ascii=False)))
+    for i in range(1, 11):
+        sub = next(item for item in demo_details.DETAILS["SUB"] if item["id"] == f"SUB{i:03d}")
+        details.append((f"TASK{i:03d}", "Pending task", f"Review {sub['title']}", "Pending", sub.get("Submission date", "15 November 2026"), json.dumps({"Task ID":f"TASK{i:03d}","Submission ID":sub["id"],"Task":"Verify, schedule or process demo submission","Owner":"Demo Operations","Status":"Pending","Demo":"Yes"}, ensure_ascii=False)))
+    conn.executemany("INSERT INTO demo_detail_records(record_id,record_type,title,status,created_at,payload_json) VALUES (?,?,?,?,?,?)", details)
     conn.commit()
     return counts(conn)
 
@@ -214,3 +239,16 @@ def map_data(conn):
 
 def certificate(conn, identifier):
     return conn.execute("SELECT c.certificate_no,c.verification_token,c.issued_at,s.tracking_id,s.device_name,s.category,s.quantity,f.name facility_name,p.outcome FROM demo_certificates c JOIN demo_submissions s ON s.id=c.submission_id JOIN demo_processing p ON p.submission_id=s.id JOIN demo_facilities f ON f.id=p.facility_id WHERE c.certificate_no=? OR c.verification_token=?", (identifier, identifier)).fetchone()
+
+
+def detail_records(conn):
+    rows = conn.execute("SELECT record_id,record_type,title,status,created_at,payload_json FROM demo_detail_records ORDER BY record_id").fetchall()
+    return [dict(row) | {"details": json.loads(row["payload_json"]), "is_demo": True} for row in rows]
+
+
+def update_detail(conn, record_id, status):
+    row = conn.execute("SELECT record_id,record_type,status,payload_json FROM demo_detail_records WHERE record_id=?", (record_id,)).fetchone()
+    if not row: return None
+    payload = json.loads(row["payload_json"]); payload["Status"] = status
+    conn.execute("UPDATE demo_detail_records SET status=?,payload_json=? WHERE record_id=?", (status, json.dumps(payload, ensure_ascii=False), record_id)); conn.commit()
+    return {"record_id": record_id, "status": status, "is_demo": True}

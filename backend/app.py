@@ -113,7 +113,7 @@ def create_app(db_path=None):
     demo_conn.commit()
     # Keep the presentation inputs available in the normal admin workflow while
     # leaving every live production table untouched.
-    if demo_data.counts(demo_conn)["total"] == 0:
+    if demo_data.counts(demo_conn)["total"] == 0 or demo_conn.execute("SELECT COUNT(*) FROM demo_detail_records").fetchone()[0] == 0:
         demo_data.reset(demo_conn)
     demo_conn.close()
 
@@ -767,16 +767,12 @@ def create_app(db_path=None):
         conn = demo_db()
         try:
             demo_enabled(conn)
-            next_status = {"SUBMITTED":"VERIFIED", "VERIFIED":"COLLECTION_SCHEDULED", "COLLECTION_SCHEDULED":"COLLECTED", "COLLECTED":"PROCESSED"}
-            records = []
-            for row in conn.execute("SELECT tracking_id reference,demo_name name,category,city locality,status,created_at FROM demo_submissions ORDER BY id"):
-                records.append(dict(row) | {"record_type":"E-waste submission", "is_demo":True, "next_status":next_status.get(row["status"])})
-            queries = (("Pickup", "SELECT s.tracking_id reference,'Pickup request' name,'Pickup' category,s.city locality,p.status,p.created_at FROM demo_pickups p JOIN demo_submissions s ON s.id=p.submission_id"), ("Distributor assignment", "SELECT s.tracking_id reference,a.distributor_name name,s.category,s.city locality,a.status,a.assigned_at created_at FROM demo_assignments a JOIN demo_submissions s ON s.id=a.submission_id"), ("Collection centre", "SELECT 'DEMO-CENTRE-'||id reference,name, 'Operations' category,city locality,status,'2026-10-01T00:00:00Z' created_at FROM demo_centres"), ("Facility", "SELECT 'DEMO-FACILITY-'||id reference,name,'Processing' category,city locality,status,'2026-10-01T00:00:00Z' created_at FROM demo_facilities"), ("Processing", "SELECT s.tracking_id reference,f.name,'Processing' category,f.city locality,'PROCESSED' status,p.processed_at created_at FROM demo_processing p JOIN demo_submissions s ON s.id=p.submission_id JOIN demo_facilities f ON f.id=p.facility_id"), ("Certificate", "SELECT certificate_no reference,'Sample certificate' name,'Certificate' category,'E-Cycle' locality,'SAMPLE' status,issued_at created_at FROM demo_certificates"), ("Community drive", "SELECT 'DEMO-DRIVE-'||id reference,title,'Community drive' category,city locality,status,drive_date||'T12:00:00Z' created_at FROM demo_drives"), ("Notification", "SELECT 'DEMO-NOTIFICATION-'||id reference,event_type name,'Activity' category,'E-Cycle' locality,'SAMPLE' status,created_at FROM demo_notifications"))
-            for record_type, query in queries:
-                for row in conn.execute(query): records.append(dict(row) | {"record_type":record_type, "is_demo":True, "next_status":None})
-            records.sort(key=lambda row: row["created_at"], reverse=True)
-            display_records = [record | {"tracking_id": record["reference"], "city": record["locality"], "locality": record["record_type"]} for record in records]
-            return jsonify({"demo": True, "label": "100 SAMPLE RECORDS — ISOLATED FROM LIVE DATA", "records": records, "submissions": display_records})
+            records = demo_data.detail_records(conn)
+            next_status = {"Pending":"Approved", "Approved":"Assigned", "Assigned":"Completed"}
+            for record in records:
+                details = record["details"]
+                record["reference"] = record["record_id"]; record["tracking_id"] = record["record_id"]; record["name"] = record["title"]; record["category"] = details.get("Category") or details.get("Item category") or record["record_type"]; record["locality"] = details.get("Pickup address") or details.get("Address") or details.get("Destination") or "Demo operations"; record["city"] = record["locality"]; record["next_status"] = next_status.get(record["status"]) if record["record_type"] == "E-waste submission" else None
+            return jsonify({"demo": True, "label": "100 DETAILED SAMPLE RECORDS — ISOLATED FROM LIVE DATA", "records": records, "submissions": records})
         finally:
             conn.close()
 
@@ -784,14 +780,14 @@ def create_app(db_path=None):
     @admin_required(permission="submissions.write")
     def admin_demo_input_status(tracking_id):
         payload = body(); new_status = payload.get("status")
-        allowed = {"SUBMITTED":"VERIFIED", "VERIFIED":"COLLECTION_SCHEDULED", "COLLECTION_SCHEDULED":"COLLECTED", "COLLECTED":"PROCESSED"}
         conn = demo_db()
         try:
-            row = conn.execute("SELECT id,status FROM demo_submissions WHERE tracking_id=?", (tracking_id.strip().upper(),)).fetchone()
-            if not row: raise ApiError("Demo input not found", 404)
-            if allowed.get(row["status"]) != new_status: raise ApiError("Demo input can only advance to its next workflow status", 409)
-            conn.execute("UPDATE demo_submissions SET status=? WHERE id=?", (new_status, row["id"])); conn.commit()
-            return jsonify({"demo": True, "tracking_id": tracking_id.strip().upper(), "status": new_status})
+            row = next((item for item in demo_data.detail_records(conn) if item["record_id"] == tracking_id.strip().upper()), None)
+            if not row or row["record_type"] != "E-waste submission": raise ApiError("Demo submission not found", 404)
+            allowed = {"Pending":"Approved", "Approved":"Assigned", "Assigned":"Completed"}
+            if allowed.get(row["status"]) != new_status: raise ApiError("Demo submission can only advance to its next workflow status", 409)
+            result = demo_data.update_detail(conn, row["record_id"], new_status)
+            return jsonify(result | {"tracking_id": row["record_id"]})
         finally:
             conn.close()
 
