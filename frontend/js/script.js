@@ -104,15 +104,18 @@ async function initNav() {
     try { currentUser = (await api("/auth/me")).user; } catch (e) { currentUser = null; }
     if (!box || !currentUser) return;
     box.textContent = "";
-    const dash = make("a", "Dashboard", "btn btn-outline"); dash.href = "dashboard.html";
-    const schedule = make("a", "Schedule Pickup", "btn btn-outline"); schedule.href = "operations.html";
+    const dash = make("a", "Dashboard", "btn btn-outline");
+    const schedule = make("a", "Schedule Pickup", "btn btn-outline");
+    const adminArea = currentUser.role === "admin";
+    dash.href = adminArea ? "/admin/dashboard" : "/dashboard.html";
+    schedule.href = adminArea ? "/admin/operations" : "/operations.html";
     const out = make("button", "Logout", "btn btn-primary");
     out.type = "button";
     out.onclick = async () => {
         out.disabled = true;
         try {
             await api("/auth/logout", { method: "POST", body: {} });
-            window.location.href = "index.html";
+            window.location.href = "/index.html";
         } catch (e) {
             out.disabled = false;
             const status = document.querySelector("main") || document.body;
