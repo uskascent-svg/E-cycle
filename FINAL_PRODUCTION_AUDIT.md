@@ -2,7 +2,7 @@
 
 Audit date: 17 November 2026  
 Repository: https://github.com/uskascent-svg/E-cycle  
-Latest verified commit: `09bca7a`  
+Latest repository commit: `8b5f870` (documentation); latest deployed application commit: `09bca7a`  
 Deployment: Render (`https://e-cycle-xyv5.onrender.com`)
 
 ## Executive result
