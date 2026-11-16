@@ -17,13 +17,20 @@ from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
     from google import genai
 except ImportError:  # optional until GEMINI_API_KEY is configured
     genai = None
+
+try:
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+except ImportError:  # optional fallback keeps token tracking available
+    qrcode = None
+    SvgPathImage = None
 
 import db
 import rules
@@ -380,6 +387,8 @@ def create_app(db_path=None):
             "status": "SUBMITTED",
             "linked_to_account": user is not None,
             "qr_token": qr_token,
+            "qr_url": request.host_url.rstrip("/") + "/api/qr/" + qr_token,
+            "qr_image_url": request.host_url.rstrip("/") + "/api/qr-image/" + qr_token + ".svg",
         }), 201
 
     @app.get("/api/submissions/mine")
@@ -672,6 +681,20 @@ def create_app(db_path=None):
         row=get_db().execute("SELECT s.tracking_id,s.device_name,s.category,s.quantity,s.status,s.recommendation FROM qr_tracking q JOIN submissions s ON s.id=q.submission_id WHERE q.token=?", (token,)).fetchone()
         if not row: raise ApiError("QR tracking code not found",404)
         return jsonify({"valid": True, **dict(row), "public_safe": True})
+
+    @app.get("/api/qr-image/<token>.svg")
+    def public_qr_svg(token):
+        row = get_db().execute("SELECT token FROM qr_tracking WHERE token=?", (token,)).fetchone()
+        if not row: raise ApiError("QR tracking code not found", 404)
+        if qrcode is None or SvgPathImage is None:
+            raise ApiError("QR image generation is unavailable; use the tracking URL", 503)
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=4)
+        qr.add_data(request.host_url.rstrip("/") + "/api/qr/" + token)
+        qr.make(fit=True)
+        image = qr.make_image(image_factory=SvgPathImage)
+        stream = io.BytesIO()
+        image.save(stream)
+        return Response(stream.getvalue(), mimetype="image/svg+xml")
 
     @app.get("/api/rewards/mine")
     @login_required
@@ -1129,6 +1152,12 @@ User message:
 
     @app.get("/admin/dashboard")
     def admin_dashboard_page():
+        return send_from_directory(FRONTEND, "admin-dashboard.html")
+
+    @app.get("/admin/<section>")
+    def admin_section_page(section):
+        if section not in {"users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
+            return not_found(None)
         return send_from_directory(FRONTEND, "admin-dashboard.html")
 
     @app.get("/")
