@@ -41,11 +41,15 @@ class OperationsTests(unittest.TestCase):
     def test_certificate_requires_processed_submission_and_public_verification(self):
         submission = self.client.post("/api/submissions", json={"category": "Laptop", "device_name": "ThinkPad", "quantity": 1, "condition": "working", "location": "Nashik"}).get_json()
         admin = self.admin()
-        for status in ("VERIFIED", "COLLECTION_SCHEDULED", "COLLECTED", "PROCESSED"):
+        for status in ("VERIFIED", "COLLECTION_SCHEDULED", "COLLECTED"):
             self.assertEqual(admin.patch("/api/admin/submissions/" + submission["tracking_id"] + "/status", json={"status": status}).status_code, 200)
-        issued = admin.post("/api/admin/certificates", json={"tracking_id": submission["tracking_id"]})
-        self.assertEqual(issued.status_code, 201)
-        verified = self.client.get("/api/certificates/" + issued.get_json()["verification_token"])
+        facility = admin.post("/api/admin/facilities", json={"name": "Verified Facility", "service_area": "Nashik", "supported_categories": ["Laptop"], "capacity": 100}).get_json()
+        self.assertEqual(admin.patch(f"/api/admin/facilities/{facility['id']}", json={"verification_status": "VERIFIED"}).status_code, 200)
+        self.assertEqual(admin.post("/api/admin/facility-intake", json={"tracking_id": submission["tracking_id"], "facility_id": facility["id"], "received_quantity": 1}).status_code, 201)
+        processed = admin.post("/api/admin/processing", json={"tracking_id": submission["tracking_id"], "facility_id": facility["id"], "outcome": "MATERIAL_RECOVERY", "processed_quantity": 1, "evidence_note": "Recorded processing."})
+        self.assertEqual(processed.status_code, 201)
+        issued = self.client.get("/api/certificates/mine").get_json()["certificates"][0]
+        verified = self.client.get("/api/certificates/" + issued["verification_token"])
         self.assertEqual(verified.status_code, 200)
         self.assertTrue(verified.get_json()["valid"])
 

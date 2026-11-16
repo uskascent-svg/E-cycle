@@ -249,7 +249,7 @@ async function loadDashboard() {
         $("statTotal").textContent = d.stats.total;
         $("statActive").textContent = d.stats.active;
         $("statCompleted").textContent = d.stats.completed;
-        $("statCertificates").textContent = d.stats.certificates;
+        $("statCertificates").textContent = d.stats.issued_certificates ?? d.stats.certificates;
         const body = $("submissionRows");
         body.textContent = "";
         if (!d.submissions.length) {

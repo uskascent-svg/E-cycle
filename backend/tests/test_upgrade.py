@@ -82,14 +82,26 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(admin.post("/api/admin/locations", json={"entity_type": "SUBMISSION", "entity_id": submission_id, "latitude": 91, "longitude": 77, "consented": True}).status_code, 400)
         self.assertEqual(admin.post("/api/admin/locations", json={"entity_type": "SUBMISSION", "entity_id": submission_id, "latitude": 20.0, "longitude": 73.78, "consented": True}).status_code, 200)
         self.assertTrue(admin.get("/api/admin/collection-map").get_json()["markers"])
-        for status in ("VERIFIED", "COLLECTION_SCHEDULED", "COLLECTED", "PROCESSED"):
+        for status in ("VERIFIED", "COLLECTION_SCHEDULED", "COLLECTED"):
             self.assertEqual(admin.patch("/api/admin/submissions/" + submission["tracking_id"] + "/status", json={"status": status}).status_code, 200)
-        issued = admin.post("/api/admin/certificates", json={"tracking_id": submission["tracking_id"]}).get_json()
+        facility = admin.post("/api/admin/facilities", json={"name": "Verified Facility", "service_area": "Nashik", "supported_categories": ["Laptop"], "capacity": 100}).get_json()
+        self.assertEqual(admin.patch(f"/api/admin/facilities/{facility['id']}", json={"verification_status": "VERIFIED"}).status_code, 200)
+        self.assertEqual(admin.post("/api/admin/facility-intake", json={"tracking_id": submission["tracking_id"], "facility_id": facility["id"], "received_quantity": 1}).status_code, 201)
+        self.assertEqual(admin.post("/api/admin/processing", json={"tracking_id": submission["tracking_id"], "facility_id": facility["id"], "outcome": "MATERIAL_RECOVERY", "processed_quantity": 1, "evidence_note": "Recorded processing."}).status_code, 201)
+        issued = self.client.get("/api/certificates/mine").get_json()["certificates"][0]
         self.assertEqual(self.client.get("/api/certificates/" + issued["certificate_no"]).status_code, 200)
         pdf = self.client.get("/api/certificates/" + issued["verification_token"] + "/pdf")
         self.assertEqual(pdf.status_code, 200)
         self.assertEqual(pdf.content_type, "application/pdf")
         self.assertEqual(admin.patch("/api/admin/certificates/" + issued["certificate_no"], json={"action": "revoke", "reason": "Administrative correction"}).status_code, 200)
+
+    def test_user_location_requires_consent_and_is_pending_verification(self):
+        self.client.post("/api/submissions", json={"category": "Laptop", "device_name": "Latitude", "quantity": 1, "condition": "working", "location": "Nashik"})
+        mine = self.client.get("/api/submissions/mine").get_json()["submissions"][0]
+        self.assertEqual(self.client.post("/api/locations/mine", json={"submission_id": mine["id"], "latitude": 20, "longitude": 73}).status_code, 400)
+        response = self.client.post("/api/locations/mine", json={"submission_id": mine["id"], "latitude": 20, "longitude": 73, "consented": True})
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.get_json()["verified"])
 
     def test_migration_marker_and_new_tables_are_additive(self):
         conn = db.connect(self.path)

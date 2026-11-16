@@ -332,6 +332,8 @@ def create_app(db_path=None):
         sub = conn.execute("SELECT id,status FROM submissions WHERE id=?", (submission_id,)).fetchone()
         if not sub or sub["status"] != "PROCESSED":
             raise ApiError("Certificates require a processed submission", 409)
+        if not conn.execute("SELECT 1 FROM processing_records WHERE submission_id=?", (submission_id,)).fetchone():
+            raise ApiError("A facility processing record is required before issuing a certificate", 409)
         certificate_no = "EC-CERT-" + date.today().strftime("%Y%m%d") + "-" + secrets.token_hex(8).upper()
         verification_token = secrets.token_urlsafe(32)
         try:
@@ -530,21 +532,21 @@ def create_app(db_path=None):
     def my_submissions():
         uid = current_user()["id"]
         rows = get_db().execute(
-            "SELECT tracking_id, category, device_name, quantity, device_condition,"
+            "SELECT id, tracking_id, category, device_name, quantity, device_condition,"
             " recommendation, status, created_at FROM submissions"
             " WHERE user_id = ? ORDER BY id DESC LIMIT 100", (uid,)
         ).fetchall()
         total, processed = get_db().execute(
             "SELECT COUNT(*), COALESCE(SUM(status = 'PROCESSED'), 0) FROM submissions WHERE user_id = ?",
             (uid,)).fetchone()
+        issued = get_db().execute("SELECT COUNT(*) FROM certificates c JOIN submissions s ON s.id=c.submission_id WHERE s.user_id=? AND c.revoked_at IS NULL", (uid,)).fetchone()[0]
         return jsonify({
             "stats": {
                 "total": total,
                 "active": total - processed,
                 "completed": processed,
-                # Prototype showed a "Certificates" tile. No certificate feature
-                # exists yet, so this counts items eligible for one (processed).
                 "certificates": processed,
+                "issued_certificates": issued,
             },
             "submissions": [dict(r) for r in rows],
         })
@@ -939,11 +941,25 @@ def create_app(db_path=None):
         security_event("LOCATION_UPDATE", "MEDIUM", current_user()["id"], {"entity_type": entity_type, "entity_id": entity_id}); conn.commit()
         return jsonify({"updated": True, "entity_type": entity_type, "entity_id": entity_id, "latitude": lat, "longitude": lon})
 
+    @app.post("/api/locations/mine")
+    @login_required
+    def submit_my_location():
+        d = body(); entity_id = d.get("submission_id"); lat = d.get("latitude"); lon = d.get("longitude")
+        if not isinstance(entity_id, int): raise ApiError("submission_id is required", field="submission_id")
+        if isinstance(lat, bool) or not isinstance(lat, (int, float)) or not -90 <= lat <= 90: raise ApiError("latitude must be between -90 and 90", field="latitude")
+        if isinstance(lon, bool) or not isinstance(lon, (int, float)) or not -180 <= lon <= 180: raise ApiError("longitude must be between -180 and 180", field="longitude")
+        if d.get("consented") is not True: raise ApiError("Explicit location consent is required", field="consented")
+        conn = get_db(); owned = conn.execute("SELECT id FROM submissions WHERE id=? AND user_id=?", (entity_id, current_user()["id"])).fetchone()
+        if not owned: raise ApiError("Submission not found", 404)
+        conn.execute("INSERT INTO operational_locations(entity_type,entity_id,latitude,longitude,accuracy_m,consented,verified,updated_by,updated_at) VALUES ('SUBMISSION',?,?,?,?,1,0,?,?) ON CONFLICT(entity_type,entity_id) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,accuracy_m=excluded.accuracy_m,consented=1,verified=0,updated_by=excluded.updated_by,updated_at=excluded.updated_at", (entity_id,float(lat),float(lon),float(d.get("accuracy_m")) if isinstance(d.get("accuracy_m"),(int,float)) else None,current_user()["id"],now_iso()))
+        conn.commit(); return jsonify({"submitted": True, "verified": False, "message": "Location received and awaiting operational verification."}), 201
+
     @app.get("/api/map/mine")
     @login_required
     def map_mine():
-        rows = get_db().execute("SELECT l.entity_type,l.entity_id,l.latitude,l.longitude,l.accuracy_m,l.updated_at,s.tracking_id,s.status FROM operational_locations l JOIN submissions s ON s.id=l.entity_id WHERE l.entity_type='SUBMISSION' AND s.user_id=? AND l.verified=1 AND l.consented=1", (current_user()["id"],)).fetchall()
-        return jsonify({"markers": [dict(r) for r in rows], "coordinates_available": bool(rows), "privacy_note": "Only your consented submission locations are shown."})
+        conn=get_db(); rows = conn.execute("SELECT l.entity_type,l.entity_id,l.latitude,l.longitude,l.accuracy_m,l.updated_at,s.tracking_id,s.status FROM operational_locations l JOIN submissions s ON s.id=l.entity_id WHERE l.entity_type='SUBMISSION' AND s.user_id=? AND l.verified=1 AND l.consented=1", (current_user()["id"],)).fetchall()
+        pending=conn.execute("SELECT COUNT(*) FROM operational_locations l JOIN submissions s ON s.id=l.entity_id WHERE l.entity_type='SUBMISSION' AND s.user_id=? AND l.verified=0 AND l.consented=1", (current_user()["id"],)).fetchone()[0]
+        return jsonify({"markers": [dict(r) for r in rows], "pending_locations": pending, "coordinates_available": bool(rows), "privacy_note": "Only your consented, verified submission locations are shown."})
 
     @app.get("/api/distributor/map")
     @login_required
@@ -1397,6 +1413,7 @@ def create_app(db_path=None):
         conn = get_db(); sub = conn.execute("SELECT id,status FROM submissions WHERE tracking_id=?", (tracking_id,)).fetchone()
         if not sub: raise ApiError("Submission not found", 404)
         if sub["status"] != "PROCESSED": raise ApiError("Certificates require a processed submission", 409)
+        if not conn.execute("SELECT 1 FROM processing_records WHERE submission_id=?", (sub["id"],)).fetchone(): raise ApiError("A facility processing record is required before issuing a certificate", 409)
         if conn.execute("SELECT 1 FROM certificates WHERE submission_id=?", (sub["id"],)).fetchone(): raise ApiError("A certificate already exists", 409)
         record = issue_certificate_record(conn, sub["id"], current_user()["id"])
         conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"], "ISSUE_CERTIFICATE", "submission", tracking_id)); conn.commit()

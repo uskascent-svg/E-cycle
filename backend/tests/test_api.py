@@ -148,7 +148,7 @@ class SubmissionTests(Base):
         other = self.register_login(self.app.test_client(), {**USER, "email": "b@example.com"})
         self.assertEqual(other.get("/api/submissions/mine").get_json()["stats"]["total"], 0)
         mine = self.c.get("/api/submissions/mine").get_json()
-        self.assertEqual(mine["stats"], {"total": 1, "active": 1, "completed": 0, "certificates": 0})
+        self.assertEqual(mine["stats"], {"total": 1, "active": 1, "completed": 0, "certificates": 0, "issued_certificates": 0})
         self.assertEqual(mine["submissions"][0]["device_name"], "Dell Laptop")
 
 
@@ -182,7 +182,7 @@ class AdminTests(Base):
         for st in rules.STATUS_FLOW[1:]:
             a.patch(f"/api/admin/submissions/{tid}/status", json={"status": st})
         s = self.c.get("/api/submissions/mine").get_json()["stats"]
-        self.assertEqual(s, {"total": 1, "active": 0, "completed": 1, "certificates": 1})
+        self.assertEqual(s, {"total": 1, "active": 0, "completed": 1, "certificates": 1, "issued_certificates": 0})
         imp = self.c.get("/api/impact").get_json()
         self.assertEqual(imp["total_submissions"], 1)
         self.assertEqual(imp["collected_items"], 3)
