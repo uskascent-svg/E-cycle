@@ -644,25 +644,31 @@ def create_app(db_path=None):
         setting = lambda key, fallback: (conn.execute("SELECT setting_value FROM platform_settings WHERE setting_key=?", (key,)).fetchone() or {"setting_value": fallback})["setting_value"]
         recovery_rate = float(setting("estimated_recovery_rate", os.environ.get("ECYCLE_ESTIMATED_RECOVERY_RATE", "0.70")))
         co2_factor = float(setting("estimated_co2_kg_per_item", os.environ.get("ECYCLE_ESTIMATED_CO2_KG_PER_ITEM", "12")))
+        demo_conn = demo_db(); demo_records = demo_data.detail_records(demo_conn); demo_conn.close()
+        demo_subs = [r for r in demo_records if r["record_type"] == "E-waste submission"]
+        demo_inventory = [r for r in demo_records if r["record_type"] == "Collected inventory"]
+        demo_collected = sum(int(r["details"].get("Quantity", 0)) for r in demo_inventory)
+        demo_dist = {"reuse": sum("Reusable" in r["details"].get("Environmental category", "") for r in demo_subs), "repair": sum("Refurbishment" in r["details"].get("Environmental category", "") for r in demo_subs), "recycle": sum("recycling" in r["details"].get("Environmental category", "").lower() or "recovery" in r["details"].get("Environmental category", "").lower() for r in demo_subs), "specialized": sum("battery" in r["details"].get("Environmental category", "").lower() for r in demo_subs)}
         return jsonify({
-            "total_submissions": one("SELECT COUNT(*) FROM submissions"),
-            "collected_items": collected,
-            "estimated_material_recovery": round(collected * recovery_rate, 2),
-            "estimated_landfill_diversion": collected,
-            "estimated_co2e_savings_kg": round(collected * co2_factor, 2),
+            "total_submissions": one("SELECT COUNT(*) FROM submissions") + len(demo_subs),
+            "collected_items": collected + demo_collected,
+            "estimated_material_recovery": round((collected + demo_collected) * recovery_rate, 2),
+            "estimated_landfill_diversion": collected + demo_collected,
+            "estimated_co2e_savings_kg": round((collected + demo_collected) * co2_factor, 2),
             "estimate_assumptions": {
                 "recovery_rate": recovery_rate,
                 "co2_kg_per_item": co2_factor,
                 "warning": "Planning estimates only; replace with verified weight-based lifecycle factors before public claims."
             },
-            "community_participants": one("SELECT COUNT(DISTINCT user_id) FROM drive_participants"),
-            "completed_drives": one("SELECT COUNT(*) FROM drives WHERE drive_date < ?",
-                                    date.today().isoformat()),
+            "community_participants": one("SELECT COUNT(DISTINCT user_id) FROM drive_participants") + sum(r["record_type"] == "User" for r in demo_records),
+            "completed_drives": one("SELECT COUNT(*) FROM drives WHERE drive_date < ?", date.today().isoformat()) + 3,
+            "data_label": "LIVE + SAMPLE DEMONSTRATION DATA",
+            "demo_records": len(demo_records),
             "distribution": {
-                "reuse": dist.get(rules.RECOMMENDATIONS["working"], 0),
-                "repair": dist.get(rules.RECOMMENDATIONS["partially_working"], 0),
-                "recycle": dist.get(rules.RECOMMENDATIONS["non_working"], 0),
-                "specialized": dist.get(rules.SPECIALIZED, 0),
+                "reuse": dist.get(rules.RECOMMENDATIONS["working"], 0) + demo_dist["reuse"],
+                "repair": dist.get(rules.RECOMMENDATIONS["partially_working"], 0) + demo_dist["repair"],
+                "recycle": dist.get(rules.RECOMMENDATIONS["non_working"], 0) + demo_dist["recycle"],
+                "specialized": dist.get(rules.SPECIALIZED, 0) + demo_dist["specialized"],
             },
         })
 

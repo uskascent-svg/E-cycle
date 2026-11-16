@@ -334,6 +334,7 @@ async function loadImpact() {
         $("impCollected").textContent = d.collected_items;
         $("impParticipants").textContent = d.community_participants;
         $("impDrives").textContent = d.completed_drives;
+        if ($("impactDataLabel")) $("impactDataLabel").textContent = `${d.data_label || "Database-backed impact data"} · ${d.demo_records || 0} sample records included.`;
         const n = d.distribution;
         const count = k => n[k] + (n[k] === 1 ? " submission" : " submissions");
         $("distReuse").textContent = count("reuse");
