@@ -945,6 +945,7 @@ def create_app(db_path=None):
         demo_conn = demo_db(); demo_records = demo_data.detail_records(demo_conn); demo_conn.close()
         demo_count = lambda kind: sum(record["record_type"] == kind for record in demo_records)
         demo_metrics = {"users": demo_count("User"), "submissions": demo_count("E-waste submission"), "pending_tasks": demo_count("Pending task"), "completed_pickups": demo_count("Completed pickup"), "distributors": demo_count("Distributor"), "facilities": demo_count("Facility"), "collected_items": demo_count("Collected inventory"), "security_alerts": demo_count("Security alert"), "total_records": len(demo_records), "label": "SAMPLE DATA — ISOLATED FROM LIVE OPERATIONS"}
+        demo_activity = [{"action": "SAMPLE — " + record["title"], "entity_type": record["record_type"], "entity_id": record["record_id"], "created_at": record["created_at"], "is_demo": True} for record in demo_records if record["record_type"] in ("E-waste submission", "Completed pickup", "Security alert")][:10]
         return jsonify({
             "users": count("SELECT COUNT(*) FROM users WHERE role='user'"),
             "submissions": count("SELECT COUNT(*) FROM submissions"),
@@ -956,7 +957,7 @@ def create_app(db_path=None):
             "collected_quantity": conn.execute("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()[0],
             "unread_security": count("SELECT COUNT(*) FROM security_events WHERE severity IN ('HIGH','CRITICAL') AND created_at >= datetime('now','-30 days')"),
             "pending_tasks": count("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED')") + count("SELECT COUNT(*) FROM reports WHERE status IN ('SUBMITTED','UNDER_REVIEW','INVESTIGATING')"),
-            "recent_activity": [dict(r) for r in activity],
+            "recent_activity": [dict(r) for r in activity] + demo_activity,
             "environmental": {"collected_items": impact_row["collected"]},
             "monthly": [dict(r) for r in monthly],
             "demo_metrics": demo_metrics,
