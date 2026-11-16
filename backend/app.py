@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -1756,6 +1756,10 @@ User message:
     @app.get("/admin/login")
     def admin_login_page():
         return send_from_directory(FRONTEND, "admin-login.html")
+
+    @app.get("/admin")
+    def admin_page_alias():
+        return redirect("/admin/dashboard")
 
     @app.get("/admin/dashboard")
     def admin_dashboard_page():

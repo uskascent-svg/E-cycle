@@ -4,9 +4,9 @@ body{font-family:Arial,sans-serif;color:#17251d;background:#fff;line-height:1.6}
 a{text-decoration:none;color:inherit}
 .container{width:90%;max-width:1200px;margin:auto}
 .navbar{background:#fff;border-bottom:1px solid #e5ebe7;position:sticky;top:0;z-index:100}
-.nav-content{min-height:75px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.nav-content{min-height:75px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px}
 .logo{font-size:24px;font-weight:700;color:#16804b}
-.nav-links{display:flex;gap:22px}.nav-links a{color:#4b5b52;font-size:14px}.nav-links a:hover{color:#16804b}
+.nav-links{display:flex;gap:18px;flex:1 1 520px;min-width:0;flex-wrap:wrap;align-items:center}.nav-links a{color:#4b5b52;font-size:14px;white-space:nowrap}.nav-links a:hover{color:#16804b}
 .nav-buttons{display:flex;gap:10px}
 .btn{display:inline-block;padding:10px 18px;border-radius:8px;font-weight:600;font-size:14px;border:0;cursor:pointer}
 .btn-primary{background:#16804b;color:white}.btn-primary:hover{background:#11663c}
