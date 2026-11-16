@@ -34,6 +34,11 @@ class DemoTests(unittest.TestCase):
         first = next(row for row in rows if row["next_status"]); result = self.admin.patch("/api/admin/demo/inputs/" + first["tracking_id"] + "/status", json={"status": first["next_status"]})
         self.assertEqual(result.status_code, 200); conn = db.connect(self.path); self.assertEqual(conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0], 0); conn.close()
 
+    def test_main_admin_panels_include_sample_rows(self):
+        self.assertEqual(len(self.admin.get("/api/admin/users").get_json()["users"]), 26)
+        self.assertEqual(len(self.admin.get("/api/admin/distributor-scores").get_json()["scores"]), 30)
+        self.assertEqual(len(self.admin.get("/api/admin/inventory").get_json()["inventory"]), 12)
+
     def test_controls_qr_pdf_and_production_isolation(self):
         self.assertEqual(self.reset().status_code, 200)
         cert = self.admin.get("/api/admin/demo/certificates").get_json()["certificates"][0]

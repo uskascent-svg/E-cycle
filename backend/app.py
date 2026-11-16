@@ -975,7 +975,15 @@ def create_app(db_path=None):
             FROM users u LEFT JOIN account_status s ON s.user_id=u.id
             LEFT JOIN admin_roles ar ON ar.user_id=u.id
             WHERE u.name LIKE ? OR u.email LIKE ? ORDER BY u.id DESC LIMIT ?""", (f"%{q}%", f"%{q}%", limit)).fetchall()
-        return jsonify({"users": [dict(r) for r in rows]})
+        users = [dict(r) for r in rows]
+        demo_conn = demo_db()
+        for record in demo_data.detail_records(demo_conn):
+            if record["record_type"] != "User": continue
+            details = record["details"]
+            if q and q.lower() not in (record["title"] + " " + details.get("Email", "")).lower(): continue
+            users.append({"id": record["record_id"], "name": record["title"], "email": details.get("Email", ""), "phone": details.get("Phone", ""), "address": details.get("Address", ""), "role": "demo user", "created_at": record["created_at"], "active": 0 if details.get("Status") == "Inactive" else 1, "admin_role": None, "is_demo": True})
+        demo_conn.close()
+        return jsonify({"users": users[:limit]})
 
     @app.get("/api/admin/me")
     @admin_required(permission="portal")
@@ -1200,7 +1208,12 @@ def create_app(db_path=None):
         scores=[]
         for row in rows:
             score=score_for_distributor(row["id"]); scores.append({**dict(row), **score})
-        get_db().commit(); return jsonify({"scores": scores})
+        demo_conn = demo_db()
+        for record in demo_data.detail_records(demo_conn):
+            if record["record_type"] != "Distributor": continue
+            details = record["details"]
+            scores.append({"id": record["record_id"], "service_area": details.get("Service cities", "Demo Maharashtra"), "name": record["title"], "email": details.get("Email", ""), "completed": int(details.get("Completed pickups", 0)), "on_time": int(details.get("Completed pickups", 0)), "delayed": 0, "score": round(float(details.get("Performance rating", "4.5").split("/")[0]) * 20), "is_demo": True})
+        demo_conn.close(); get_db().commit(); return jsonify({"scores": scores})
 
     @app.post("/api/admin/inventory")
     @admin_required
@@ -1217,7 +1230,13 @@ def create_app(db_path=None):
     @admin_required
     def admin_inventory_list():
         rows=get_db().execute("SELECT i.*,f.name facility_name FROM facility_inventory i JOIN facilities f ON f.id=i.facility_id ORDER BY i.updated_at DESC").fetchall()
-        return jsonify({"inventory":[dict(r) for r in rows]})
+        inventory = [dict(r) for r in rows]
+        demo_conn = demo_db()
+        for record in demo_data.detail_records(demo_conn):
+            if record["record_type"] != "Collected inventory": continue
+            details = record["details"]; weight = details.get("Weight", "0").split()[0]
+            inventory.append({"id": record["record_id"], "facility_name": details.get("Destination", "Demo facility"), "category": details.get("Item category", record["title"]), "quantity": int(details.get("Quantity", 0)), "weight_kg": float(weight), "status": details.get("Processing status", "Received").upper().replace(" ", "_"), "updated_at": record["created_at"], "is_demo": True})
+        demo_conn.close(); return jsonify({"inventory": inventory})
 
     @app.post("/api/admin/distributors")
     @admin_required
