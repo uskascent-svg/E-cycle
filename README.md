@@ -122,3 +122,36 @@ The current deployment still uses SQLite, so Render's free ephemeral filesystem 
 suitable for durable production records. The next production migration should move these
 tables and existing data to managed PostgreSQL, private object storage for evidence, and a
 real email provider with retry tracking.
+
+## Platform upgrade (November 2026)
+
+The platform now includes an additive upgrade layer that preserves the existing API and
+database records:
+
+- Secure admin portal at `/admin/login` and `/admin/dashboard`.
+- Admin summary, user search, security-event, analytics, distributor-score, inventory,
+  and privacy-safe collection-map APIs.
+- Submission QR tokens with public-safe tracking at `/api/qr/<token>`.
+- Transactional Green Points ledger at `/api/rewards/mine`; points are awarded by the
+  backend, never accepted from browser values.
+- Additive tables for roles, notification preferences, QR tracking, rewards, inventory,
+  environmental metrics, distributor scores, security events, forecasts, and migration
+  tracking.
+- Transparent three-month moving-average collection forecasts. Forecasts are labelled
+  estimates and are not machine-learning predictions.
+- Security telemetry for successful and failed authentication without storing passwords,
+  API keys, cookies, or raw IP addresses.
+
+The schema upgrade is additive and idempotent. It does not drop, reset, or rewrite existing
+tables. The migration marker is `2026-11-platform-upgrade`; production database migration
+and storage changes still require a separate backup and approval process.
+
+New test coverage is in `backend/tests/test_upgrade.py`. Run the complete suite with:
+
+```bash
+python -m unittest discover -s backend/tests -v
+```
+
+The admin portal uses the existing Flask session and admin authorization middleware. It is
+not secured by frontend visibility alone: every new admin endpoint checks authorization on
+the server.

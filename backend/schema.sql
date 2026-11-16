@@ -214,3 +214,121 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at);
+
+-- Additive platform-upgrade tables. Existing tables and records are preserved.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS admin_roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    role_name TEXT NOT NULL DEFAULT 'Admin' CHECK (role_name IN ('Super Admin','Admin','Operations Manager','Distributor Manager','Facility Manager','Read-only Auditor')),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS account_status (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    in_app INTEGER NOT NULL DEFAULT 1 CHECK (in_app IN (0,1)),
+    email INTEGER NOT NULL DEFAULT 0 CHECK (email IN (0,1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS qr_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id INTEGER NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_qr_tracking_token ON qr_tracking(token);
+
+CREATE TABLE IF NOT EXISTS green_wallets (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    points INTEGER NOT NULL DEFAULT 0 CHECK (points >= 0),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS green_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    submission_id INTEGER REFERENCES submissions(id) ON DELETE SET NULL,
+    points INTEGER NOT NULL CHECK (points <> 0),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(user_id, submission_id, reason)
+);
+
+CREATE TABLE IF NOT EXISTS facility_inventory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    facility_id INTEGER NOT NULL REFERENCES facilities(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    weight_kg REAL NOT NULL DEFAULT 0 CHECK (weight_kg >= 0),
+    status TEXT NOT NULL DEFAULT 'RECEIVED' CHECK (status IN ('RECEIVED','IN_PROCESS','PROCESSED','DISPATCHED')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(facility_id, category, status)
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_facility ON facility_inventory(facility_id, status);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inventory_id INTEGER NOT NULL REFERENCES facility_inventory(id) ON DELETE CASCADE,
+    quantity_delta INTEGER NOT NULL,
+    weight_delta_kg REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS environmental_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id INTEGER REFERENCES submissions(id) ON DELETE CASCADE,
+    metric_type TEXT NOT NULL,
+    value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    assumption TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS distributor_scores (
+    distributor_id INTEGER PRIMARY KEY REFERENCES distributors(id) ON DELETE CASCADE,
+    completed INTEGER NOT NULL DEFAULT 0,
+    on_time INTEGER NOT NULL DEFAULT 0,
+    delayed INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    formula TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'INFO' CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL')),
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ip_hash TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at, severity);
+
+CREATE TABLE IF NOT EXISTS collection_forecasts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    forecast_month TEXT NOT NULL,
+    predicted_quantity REAL NOT NULL,
+    method TEXT NOT NULL,
+    based_on_months INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(forecast_month, method)
+);
+
+INSERT OR IGNORE INTO schema_migrations(version) VALUES ('2026-11-platform-upgrade');

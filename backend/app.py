@@ -184,7 +184,11 @@ def create_app(db_path=None):
                     "SELECT id, name, email, role FROM users WHERE id = ?", (uid,)
                 ).fetchone()
                 if row:
-                    g.user = row
+                    suspended = get_db().execute("SELECT active FROM account_status WHERE user_id=?", (uid,)).fetchone()
+                    if suspended and not suspended["active"]:
+                        session.clear()
+                    else:
+                        g.user = row
                 else:
                     session.clear()  # account was deleted
         return g.user
@@ -221,6 +225,41 @@ def create_app(db_path=None):
         if not isinstance(value, list) or not value or any(not isinstance(x, str) for x in value):
             raise ApiError(f"{field} must be a non-empty list of text values", field=field)
         return json.dumps(sorted({x.strip() for x in value if x.strip()}))
+
+    def security_event(event_type, severity="INFO", actor_user_id=None, metadata=None):
+        """Record security telemetry without storing credentials or raw IP addresses."""
+        raw_ip = request.remote_addr or "unknown"
+        ip_hash = secrets.token_hex(16) if raw_ip == "unknown" else __import__("hashlib").sha256(raw_ip.encode()).hexdigest()[:32]
+        get_db().execute(
+            "INSERT INTO security_events (event_type,severity,actor_user_id,ip_hash,metadata) VALUES (?,?,?,?,?)",
+            (event_type, severity, actor_user_id, ip_hash, json.dumps(metadata or {}, separators=(",", ":"))),
+        )
+
+    def award_points(user_id, submission_id, points, reason, conn=None):
+        """Idempotent reward transaction; frontend values are never trusted."""
+        conn = conn or get_db()
+        try:
+            conn.execute("INSERT INTO green_wallets(user_id,points) VALUES (?,0) ON CONFLICT(user_id) DO NOTHING", (user_id,))
+            conn.execute("INSERT INTO green_transactions(user_id,submission_id,points,reason) VALUES (?,?,?,?)", (user_id, submission_id, points, reason))
+            conn.execute("UPDATE green_wallets SET points=points+?,updated_at=? WHERE user_id=?", (points, now_iso(), user_id))
+        except sqlite3.IntegrityError:
+            pass
+
+    def score_for_distributor(distributor_id):
+        conn = get_db()
+        row = conn.execute("""SELECT
+            SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) completed,
+            SUM(CASE WHEN status='COMPLETED' AND pickup_date >= date(created_at) THEN 1 ELSE 0 END) on_time,
+            SUM(CASE WHEN status='RESCHEDULE_REQUESTED' OR status='FAILED' THEN 1 ELSE 0 END) delayed,
+            SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) cancelled
+            FROM assignments WHERE distributor_id=?""", (distributor_id,)).fetchone()
+        completed = row["completed"] or 0; on_time = row["on_time"] or 0; delayed = row["delayed"] or 0; cancelled = row["cancelled"] or 0
+        score = round(max(0, min(100, (on_time * 100 + completed * 10 - delayed * 15 - cancelled * 20) / max(1, completed + delayed + cancelled))), 2)
+        formula = "on_time*100 + completed*10 - delayed*15 - cancelled*20, normalized to 0-100"
+        conn.execute("""INSERT INTO distributor_scores(distributor_id,completed,on_time,delayed,cancelled,score,formula,updated_at)
+            VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(distributor_id) DO UPDATE SET completed=excluded.completed,on_time=excluded.on_time,delayed=excluded.delayed,cancelled=excluded.cancelled,score=excluded.score,formula=excluded.formula,updated_at=excluded.updated_at""",
+            (distributor_id, completed, on_time, delayed, cancelled, score, formula, now_iso()))
+        return {"completed": completed, "on_time": on_time, "delayed": delayed, "cancelled": cancelled, "score": score, "formula": formula}
 
     # -------------------------------------------------------------------- health
     @app.get("/api/health")
@@ -262,15 +301,23 @@ def create_app(db_path=None):
         row = get_db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         ok = check_password_hash(row["password_hash"] if row else _DUMMY_HASH, password)
         if not (row and ok):
+            security_event("LOGIN_FAILURE", "MEDIUM", metadata={"email_present": bool(email)})
+            get_db().commit()
             raise ApiError("Invalid email or password", 401)
         session.clear()
         session.permanent = True
         session["user_id"] = row["id"]
+        security_event("LOGIN_SUCCESS", "INFO", row["id"])
+        get_db().commit()
         return jsonify({"user": user_json(row)})
 
     @app.post("/api/auth/logout")
     def logout():
+        user = current_user()
         session.clear()
+        if user is not None:
+            security_event("LOGOUT", "INFO", user["id"])
+            get_db().commit()
         return jsonify({"message": "Logged out"})
 
     @app.get("/api/auth/me")
@@ -322,12 +369,17 @@ def create_app(db_path=None):
             "INSERT INTO status_history (submission_id, status, note) VALUES (?,?,?)",
             (sid, "SUBMITTED", "Request received by E-Cycle."),
         )
+        qr_token = "QR-" + secrets.token_urlsafe(18)
+        conn.execute("INSERT INTO qr_tracking (submission_id,token) VALUES (?,?)", (sid, qr_token))
+        if user:
+            award_points(user["id"], sid, 10, "Submission received", conn)
         conn.commit()
         return jsonify({
             "tracking_id": tracking_id,
             "recommendation": recommendation,
             "status": "SUBMITTED",
             "linked_to_account": user is not None,
+            "qr_token": qr_token,
         }), 201
 
     @app.get("/api/submissions/mine")
@@ -433,10 +485,20 @@ def create_app(db_path=None):
         one = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
         dist = {r["recommendation"]: r["n"] for r in conn.execute(
             "SELECT recommendation, COUNT(*) AS n FROM submissions GROUP BY recommendation")}
+        collected = one("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')")
+        recovery_rate = float(os.environ.get("ECYCLE_ESTIMATED_RECOVERY_RATE", "0.70"))
+        co2_factor = float(os.environ.get("ECYCLE_ESTIMATED_CO2_KG_PER_ITEM", "12"))
         return jsonify({
             "total_submissions": one("SELECT COUNT(*) FROM submissions"),
-            "collected_items": one(
-                "SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')"),
+            "collected_items": collected,
+            "estimated_material_recovery": round(collected * recovery_rate, 2),
+            "estimated_landfill_diversion": collected,
+            "estimated_co2e_savings_kg": round(collected * co2_factor, 2),
+            "estimate_assumptions": {
+                "recovery_rate": recovery_rate,
+                "co2_kg_per_item": co2_factor,
+                "warning": "Planning estimates only; replace with verified weight-based lifecycle factors before public claims."
+            },
             "community_participants": one("SELECT COUNT(DISTINCT user_id) FROM drive_participants"),
             "completed_drives": one("SELECT COUNT(*) FROM drives WHERE drive_date < ?",
                                     date.today().isoformat()),
@@ -535,6 +597,114 @@ def create_app(db_path=None):
             "verified_distributors": count("SELECT COUNT(*) FROM distributors WHERE verification_status='VERIFIED' AND status='ACTIVE'"),
             "verified_facilities": count("SELECT COUNT(*) FROM facilities WHERE verification_status='VERIFIED'"),
         })
+
+    # ------------------------------------------------------- platform upgrade API
+    @app.get("/api/admin/summary")
+    @admin_required
+    def admin_summary():
+        conn = get_db(); count = lambda sql, args=(): conn.execute(sql, args).fetchone()[0]
+        monthly = conn.execute("SELECT substr(created_at,1,7) month, COALESCE(SUM(quantity),0) quantity FROM submissions GROUP BY month ORDER BY month DESC LIMIT 12").fetchall()
+        return jsonify({
+            "users": count("SELECT COUNT(*) FROM users WHERE role='user'"),
+            "submissions": count("SELECT COUNT(*) FROM submissions"),
+            "pending": count("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED')"),
+            "approved": count("SELECT COUNT(*) FROM submissions WHERE status NOT IN ('SUBMITTED', 'PROCESSED')"),
+            "completed_pickups": count("SELECT COUNT(*) FROM pickups WHERE status='COMPLETED'") + count("SELECT COUNT(*) FROM assignments WHERE status='COMPLETED'"),
+            "distributors": count("SELECT COUNT(*) FROM distributors WHERE status='ACTIVE'"),
+            "facilities": count("SELECT COUNT(*) FROM facilities WHERE verification_status='VERIFIED'"),
+            "collected_quantity": conn.execute("SELECT COALESCE(SUM(quantity),0) FROM submissions WHERE status IN ('COLLECTED','PROCESSED')").fetchone()[0],
+            "unread_security": count("SELECT COUNT(*) FROM security_events WHERE severity IN ('HIGH','CRITICAL') AND created_at >= datetime('now','-30 days')"),
+            "monthly": [dict(r) for r in monthly],
+        })
+
+    @app.get("/api/admin/users")
+    @admin_required
+    def admin_users():
+        q = request.args.get("q", "").strip()
+        try:
+            limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+        except ValueError:
+            raise ApiError("limit must be a whole number", field="limit")
+        rows = get_db().execute("SELECT id,name,email,phone,address,role,created_at FROM users WHERE name LIKE ? OR email LIKE ? ORDER BY id DESC LIMIT ?", (f"%{q}%", f"%{q}%", limit)).fetchall()
+        return jsonify({"users": [dict(r) for r in rows]})
+
+    @app.patch("/api/admin/users/<int:user_id>")
+    @admin_required
+    def admin_update_user(user_id):
+        d = body(); fields=[]; args=[]
+        if "role" in d:
+            if d["role"] not in ("user", "admin"): raise ApiError("Invalid role", field="role")
+            fields.append("role=?"); args.append(d["role"])
+        if "active" in d:
+            if not isinstance(d["active"], bool): raise ApiError("active must be boolean", field="active")
+            get_db().execute("INSERT INTO account_status(user_id,active,updated_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET active=excluded.active,updated_at=?", (user_id, int(d["active"]), now_iso()))
+        if not fields and "active" not in d: raise ApiError("No changes supplied")
+        if fields:
+            args.append(user_id); cur=get_db().execute("UPDATE users SET " + ",".join(fields) + " WHERE id=?", args)
+            if not cur.rowcount: raise ApiError("User not found",404)
+        security_event("ADMIN_USER_UPDATE", "MEDIUM", current_user()["id"], {"user_id": user_id, "fields": [f.split('=')[0] for f in fields]})
+        get_db().commit(); return jsonify({"updated": True, "user_id": user_id})
+
+    @app.get("/api/admin/security-events")
+    @admin_required
+    def admin_security_events():
+        severity=request.args.get("severity", ""); params=[]; where=""
+        if severity:
+            where="WHERE s.severity=?"; params.append(severity)
+        rows=get_db().execute("SELECT s.id,s.event_type,s.severity,s.metadata,s.created_at,u.email actor_email FROM security_events s LEFT JOIN users u ON u.id=s.actor_user_id " + where + " ORDER BY s.id DESC LIMIT 200", params).fetchall()
+        return jsonify({"events": [dict(r) for r in rows]})
+
+    @app.get("/api/admin/analytics")
+    @admin_required
+    def admin_analytics():
+        conn=get_db(); rows=conn.execute("SELECT substr(created_at,1,7) month, SUM(quantity) quantity, COUNT(*) submissions FROM submissions GROUP BY month ORDER BY month").fetchall()
+        values=[r["quantity"] or 0 for r in rows]; forecast=round(sum(values[-3:])/max(1,len(values[-3:])),2) if values else 0
+        return jsonify({"actual": [dict(r) for r in rows], "forecast": {"next_month_quantity": forecast, "method": "three-month moving average", "based_on_months": min(3,len(values)), "is_estimate": True}})
+
+    @app.get("/api/admin/collection-map")
+    @admin_required
+    def admin_collection_map():
+        rows=get_db().execute("SELECT tracking_id,location,status,quantity,created_at FROM submissions WHERE location IS NOT NULL ORDER BY id DESC LIMIT 500").fetchall()
+        return jsonify({"coordinates_available": False, "privacy_note": "Exact coordinates are not collected; locations are shown as operational text.", "locations": [dict(r) for r in rows]})
+
+    @app.get("/api/qr/<token>")
+    def public_qr_tracking(token):
+        row=get_db().execute("SELECT s.tracking_id,s.device_name,s.category,s.quantity,s.status,s.recommendation FROM qr_tracking q JOIN submissions s ON s.id=q.submission_id WHERE q.token=?", (token,)).fetchone()
+        if not row: raise ApiError("QR tracking code not found",404)
+        return jsonify({"valid": True, **dict(row), "public_safe": True})
+
+    @app.get("/api/rewards/mine")
+    @login_required
+    def rewards_mine():
+        uid=current_user()["id"]; conn=get_db(); wallet=conn.execute("SELECT points FROM green_wallets WHERE user_id=?",(uid,)).fetchone()
+        rows=conn.execute("SELECT points,reason,created_at FROM green_transactions WHERE user_id=? ORDER BY id DESC LIMIT 100",(uid,)).fetchall()
+        return jsonify({"points": wallet["points"] if wallet else 0, "transactions": [dict(r) for r in rows]})
+
+    @app.get("/api/admin/distributor-scores")
+    @admin_required
+    def admin_distributor_scores():
+        rows=get_db().execute("SELECT d.id,d.service_area,u.name,u.email FROM distributors d JOIN users u ON u.id=d.user_id ORDER BY d.id").fetchall()
+        scores=[]
+        for row in rows:
+            score=score_for_distributor(row["id"]); scores.append({**dict(row), **score})
+        get_db().commit(); return jsonify({"scores": scores})
+
+    @app.post("/api/admin/inventory")
+    @admin_required
+    def admin_inventory_update():
+        d=body(); facility_id=d.get("facility_id"); category=text(d,"category","Category",2,60); quantity=d.get("quantity",0); weight=d.get("weight_kg",0); status=d.get("status","RECEIVED")
+        if not isinstance(facility_id,int) or not get_db().execute("SELECT id FROM facilities WHERE id=?",(facility_id,)).fetchone(): raise ApiError("Facility not found",404)
+        if isinstance(quantity,bool) or not isinstance(quantity,int) or quantity<0: raise ApiError("quantity must be a non-negative integer",field="quantity")
+        if isinstance(weight,bool) or not isinstance(weight,(int,float)) or weight<0: raise ApiError("weight_kg must be non-negative",field="weight_kg")
+        if status not in ("RECEIVED","IN_PROCESS","PROCESSED","DISPATCHED"): raise ApiError("Invalid inventory status",field="status")
+        conn=get_db(); conn.execute("INSERT INTO facility_inventory(facility_id,category,quantity,weight_kg,status,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(facility_id,category,status) DO UPDATE SET quantity=excluded.quantity,weight_kg=excluded.weight_kg,updated_at=excluded.updated_at",(facility_id,category,quantity,float(weight),status,now_iso()))
+        row=conn.execute("SELECT id FROM facility_inventory WHERE facility_id=? AND category=? AND status=?",(facility_id,category,status)).fetchone(); conn.execute("INSERT INTO inventory_movements(inventory_id,quantity_delta,weight_delta_kg,reason,actor_user_id) VALUES (?,?,?,?,?)",(row["id"],quantity,float(weight),"Admin inventory update",current_user()["id"])); conn.commit(); return jsonify({"updated":True,"inventory_id":row["id"]}),201
+
+    @app.get("/api/admin/inventory")
+    @admin_required
+    def admin_inventory_list():
+        rows=get_db().execute("SELECT i.*,f.name facility_name FROM facility_inventory i JOIN facilities f ON f.id=i.facility_id ORDER BY i.updated_at DESC").fetchall()
+        return jsonify({"inventory":[dict(r) for r in rows]})
 
     @app.post("/api/admin/distributors")
     @admin_required
@@ -648,7 +818,10 @@ def create_app(db_path=None):
         if row["status"] != "ACCEPTED": raise ApiError("Assignment must be accepted first", 409)
         if qty > row["quantity"]: raise ApiError("Collected quantity cannot exceed submitted quantity", field="collected_quantity")
         conn.execute("UPDATE assignments SET status='COMPLETED',completed_at=?,updated_at=? WHERE id=?", (now_iso(),now_iso(),assignment_id)); conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (assignment_id,current_user()["id"],"COMPLETED",note)); conn.execute("UPDATE submissions SET status='COLLECTED',updated_at=? WHERE id=?", (now_iso(),row["submission_id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (row["submission_id"],"COLLECTED",note));
-        if row["user_id"]: notify(row["user_id"], "PICKUP_COMPLETED", "Your e-waste pickup was recorded as completed.", conn)
+        if row["user_id"]:
+            notify(row["user_id"], "PICKUP_COMPLETED", "Your e-waste pickup was recorded as completed.", conn)
+            award_points(row["user_id"], row["submission_id"], 25, "Pickup completed", conn)
+        score_for_distributor(distributor["id"])
         conn.commit(); return jsonify({"assignment_id": assignment_id, "tracking_id": row["tracking_id"], "status": "COLLECTED"})
 
     @app.get("/api/notifications/mine")
@@ -664,6 +837,21 @@ def create_app(db_path=None):
         get_db().commit()
         if cur.rowcount == 0: raise ApiError("Notification not found", 404)
         return jsonify({"id": notification_id, "read": True})
+
+    @app.get("/api/notifications/preferences")
+    @login_required
+    def notification_preferences_get():
+        row = get_db().execute("SELECT in_app,email FROM notification_preferences WHERE user_id=?", (current_user()["id"],)).fetchone()
+        return jsonify(dict(row) if row else {"in_app": 1, "email": 0})
+
+    @app.patch("/api/notifications/preferences")
+    @login_required
+    def notification_preferences_update():
+        d=body()
+        if any(k not in d or not isinstance(d[k], bool) for k in ("in_app", "email")):
+            raise ApiError("in_app and email must be boolean values")
+        get_db().execute("INSERT INTO notification_preferences(user_id,in_app,email,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET in_app=excluded.in_app,email=excluded.email,updated_at=excluded.updated_at", (current_user()["id"], int(d["in_app"]), int(d["email"]), now_iso()))
+        get_db().commit(); return jsonify({"in_app": int(d["in_app"]), "email": int(d["email"])})
 
     @app.post("/api/admin/facilities")
     @admin_required
@@ -935,6 +1123,14 @@ User message:
             return jsonify({"available": True, "fallback": True, "message": fallback})
 
     # ---------------------------------------------------------- static frontend
+    @app.get("/admin/login")
+    def admin_login_page():
+        return send_from_directory(FRONTEND, "admin-login.html")
+
+    @app.get("/admin/dashboard")
+    def admin_dashboard_page():
+        return send_from_directory(FRONTEND, "admin-dashboard.html")
+
     @app.get("/")
     def home():
         return send_from_directory(FRONTEND, "index.html")
