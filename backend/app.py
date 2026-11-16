@@ -1127,6 +1127,25 @@ def create_app(db_path=None):
         conn.commit()
         return jsonify({"updated": sorted(updates), "settings": updates})
 
+    @app.get("/api/map/coverage")
+    def map_coverage():
+        """Public, city-level service coverage; never exposes private pickup coordinates."""
+        coverage = [
+            ("Pune", "Maharashtra", 18.5204, 73.8567),
+            ("Nashik", "Maharashtra", 19.9975, 73.7898),
+            ("Mumbai", "Maharashtra", 19.0760, 72.8777),
+            ("Nagpur", "Maharashtra", 21.1458, 79.0882),
+            ("Kolhapur", "Maharashtra", 16.7050, 74.2433),
+            ("Solapur", "Maharashtra", 17.6599, 75.9064),
+            ("Jalgaon", "Maharashtra", 21.0077, 75.5626),
+        ]
+        return jsonify({
+            "markers": [{"entity_type": "SERVICE_AREA", "name": f"E-Cycle service coverage — {city}", "city": f"{city}, {state}", "latitude": lat, "longitude": lon, "status": "SERVICE AVAILABLE"} for city, state, lat, lon in coverage],
+            "coordinates_available": True,
+            "privacy_note": "E-Cycle service coverage is shown at city level. These are coverage areas, not live pickup or GPS locations.",
+            "coverage": True,
+        })
+
     @app.get("/api/admin/collection-map")
     @admin_required
     def admin_collection_map():
