@@ -176,3 +176,27 @@ For an authorized maintenance operator with access to the active database, the r
 also includes `backend/reset_admin.py`. Set `ECYCLE_ADMIN_EMAIL`, `ECYCLE_ADMIN_PASSWORD`,
 and optionally `ECYCLE_DB` privately, then run `python reset_admin.py` from `backend/`.
 The command updates only an existing admin account and never prints the password.
+
+### Shared admin access code
+
+The admin login also accepts a shared access code through the server-only
+`ADMIN_ACCESS_CODE` environment variable. Render defines this variable as a private,
+unsynced setting; set its value in the Render dashboard without committing it. The code
+is compared with `secrets.compare_digest`, rate-limited, and exchanged for a secure admin
+session. It is never embedded in `admin-login.html` or frontend JavaScript. A shared-code
+session can access admin APIs only; it cannot be used as a normal user session.
+
+### Certificates and map locations
+
+Processing creates one E-Cycle-issued processing record automatically after a verified
+facility processing operation. Certificates have unique IDs and cryptographically secure
+verification tokens, public verification by ID/token, QR verification URLs, PDF downloads,
+revocation with reason, and certificate audit records. They are not government-approved or
+statutory environmental certifications. PDF downloads are authorized to the certificate
+owner or an administrator.
+
+`/map.html` uses Leaflet and OpenStreetMap only for authorized, consented, verified
+coordinates stored in `operational_locations`. It deliberately shows an empty map when no
+real coordinates exist and falls back to the operational list API. Admins can record a
+coordinate through `POST /api/admin/locations`; latitude/longitude bounds and explicit
+consent are required. Users and verified distributors receive only their permitted markers.

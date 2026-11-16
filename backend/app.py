@@ -32,6 +32,13 @@ except ImportError:  # optional fallback keeps token tracking available
     qrcode = None
     SvgPathImage = None
 
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as pdf_canvas
+except ImportError:  # PDF download reports a clear, actionable 503 fallback
+    A4 = ImageReader = pdf_canvas = None
+
 import db
 import rules
 
@@ -95,6 +102,8 @@ def create_app(db_path=None):
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # no request here needs more than 64 KB
     assistant_requests = {}
     login_attempts = {}
+    admin_code_attempts = {}
+    public_lookup_attempts = {}
 
     db.init_schema(app.config["DB_PATH"])
 
@@ -190,6 +199,9 @@ def create_app(db_path=None):
     def current_user():
         if "user" not in g:
             g.user = None
+            if session.get("admin_access_code"):
+                g.user = {"id": None, "name": "E-Cycle Access-Code Administrator", "email": "access-code-admin", "role": "admin"}
+                return g.user
             uid = session.get("user_id")
             if uid is not None:
                 row = get_db().execute(
@@ -208,7 +220,7 @@ def create_app(db_path=None):
     def login_required(fn):
         @wraps(fn)
         def wrapper(*a, **kw):
-            if current_user() is None:
+            if current_user() is None or session.get("admin_access_code"):
                 raise ApiError("Please log in first", 401)
             return fn(*a, **kw)
         return wrapper
@@ -242,6 +254,8 @@ def create_app(db_path=None):
         return "summary.read"
 
     def admin_role(user):
+        if user["id"] is None:
+            return {"role_name": "Super Admin", "active": 1}
         conn = get_db()
         role = conn.execute("SELECT role_name,active FROM admin_roles WHERE user_id=?", (user["id"],)).fetchone()
         if role:
@@ -309,6 +323,35 @@ def create_app(db_path=None):
             conn.execute("UPDATE green_wallets SET points=points+?,updated_at=? WHERE user_id=?", (points, now_iso(), user_id))
         except sqlite3.IntegrityError:
             pass
+
+    def issue_certificate_record(conn, submission_id, actor_user_id=None, action="ISSUED"):
+        """Create one certificate record after processing, never from client data."""
+        existing = conn.execute("SELECT * FROM certificates WHERE submission_id=?", (submission_id,)).fetchone()
+        if existing:
+            return existing
+        sub = conn.execute("SELECT id,status FROM submissions WHERE id=?", (submission_id,)).fetchone()
+        if not sub or sub["status"] != "PROCESSED":
+            raise ApiError("Certificates require a processed submission", 409)
+        certificate_no = "EC-CERT-" + date.today().strftime("%Y%m%d") + "-" + secrets.token_hex(8).upper()
+        verification_token = secrets.token_urlsafe(32)
+        try:
+            cur = conn.execute("INSERT INTO certificates (certificate_no,submission_id,verification_token) VALUES (?,?,?)", (certificate_no, submission_id, verification_token))
+        except sqlite3.IntegrityError:
+            return conn.execute("SELECT * FROM certificates WHERE submission_id=?", (submission_id,)).fetchone()
+        conn.execute("INSERT INTO certificate_audits(certificate_id,action,actor_user_id) VALUES (?,?,?)", (cur.lastrowid, action, actor_user_id))
+        owner = conn.execute("SELECT user_id FROM submissions WHERE id=?", (submission_id,)).fetchone()
+        if owner and owner["user_id"]:
+            notify(owner["user_id"], "CERTIFICATE_ISSUED", "Your E-Cycle processing certificate is ready to download.", conn)
+        return conn.execute("SELECT * FROM certificates WHERE id=?", (cur.lastrowid,)).fetchone()
+
+    def public_lookup_allowed(request_key):
+        now = datetime.now(timezone.utc).timestamp(); source = request.remote_addr or "unknown"
+        key = request_key + ":" + source
+        recent = [t for t in public_lookup_attempts.get(key, []) if now - t < 60]
+        if len(recent) >= 60:
+            return False
+        recent.append(now); public_lookup_attempts[key] = recent
+        return True
 
     def score_for_distributor(distributor_id):
         conn = get_db()
@@ -385,6 +428,29 @@ def create_app(db_path=None):
         security_event("LOGIN_SUCCESS", "INFO", row["id"])
         get_db().commit()
         return jsonify({"user": user_json(row)})
+
+    @app.post("/api/auth/admin-code")
+    def admin_code_login():
+        """Shared-code admin entry point; the code is read only from Render env."""
+        configured = os.environ.get("ADMIN_ACCESS_CODE", "")
+        if not configured:
+            raise ApiError("Admin access code is not configured", 503)
+        d = body(); supplied = d.get("access_code")
+        if not isinstance(supplied, str) or not supplied:
+            raise ApiError("Admin access code is required", field="access_code")
+        now = datetime.now(timezone.utc).timestamp(); source = request.remote_addr or "unknown"
+        recent = [t for t in admin_code_attempts.get(source, []) if now - t < 300]
+        if len(recent) >= 10:
+            security_event("ADMIN_CODE_RATE_LIMIT", "HIGH", metadata={"window_seconds": 300}); get_db().commit()
+            raise ApiError("Too many admin access attempts; try again later", 429)
+        recent.append(now); admin_code_attempts[source] = recent
+        if not secrets.compare_digest(supplied, configured):
+            security_event("ADMIN_CODE_FAILURE", "HIGH", metadata={"code_present": True}); get_db().commit()
+            raise ApiError("Invalid admin access code", 401)
+        session.clear(); session.permanent = True; session["admin_access_code"] = True
+        admin_code_attempts.pop(source, None)
+        security_event("ADMIN_CODE_SUCCESS", "HIGH", metadata={"session": "shared-code"}); get_db().commit()
+        return jsonify({"user": user_json(current_user()), "admin_role": "Super Admin"})
 
     @app.post("/api/auth/logout")
     def logout():
@@ -854,16 +920,50 @@ def create_app(db_path=None):
         if area: where.append("lower(location) LIKE lower(?)"); args.append("%" + area + "%")
         args.append(limit)
         rows=get_db().execute("SELECT tracking_id,location,status,quantity,created_at FROM submissions WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT ?", args).fetchall()
-        return jsonify({"coordinates_available": False, "privacy_note": "Exact coordinates are not collected; locations are shown as operational text.", "locations": [dict(r) for r in rows]})
+        markers = get_db().execute("SELECT entity_type,entity_id,latitude,longitude,accuracy_m,updated_at FROM operational_locations WHERE verified=1 AND consented=1 ORDER BY updated_at DESC LIMIT 500").fetchall()
+        return jsonify({"coordinates_available": bool(markers), "privacy_note": "Only authorized, consented, verified coordinates are shown. Text locations remain the fallback.", "markers": [dict(r) for r in markers], "locations": [dict(r) for r in rows]})
+
+    @app.post("/api/admin/locations")
+    @admin_required
+    def admin_update_location():
+        d = body(); entity_type = d.get("entity_type"); entity_id = d.get("entity_id"); lat = d.get("latitude"); lon = d.get("longitude"); accuracy = d.get("accuracy_m")
+        if entity_type not in ("SUBMISSION", "DISTRIBUTOR", "FACILITY", "DRIVE") or not isinstance(entity_id, int): raise ApiError("Invalid map entity", field="entity_type")
+        if isinstance(lat, bool) or not isinstance(lat, (int, float)) or not -90 <= lat <= 90: raise ApiError("latitude must be between -90 and 90", field="latitude")
+        if isinstance(lon, bool) or not isinstance(lon, (int, float)) or not -180 <= lon <= 180: raise ApiError("longitude must be between -180 and 180", field="longitude")
+        if accuracy is not None and (isinstance(accuracy, bool) or not isinstance(accuracy, (int, float)) or accuracy < 0): raise ApiError("accuracy_m must be non-negative", field="accuracy_m")
+        if d.get("consented") is not True: raise ApiError("Explicit location consent is required", field="consented")
+        tables = {"SUBMISSION": "submissions", "DISTRIBUTOR": "distributors", "FACILITY": "facilities", "DRIVE": "drives"}
+        conn = get_db()
+        if not conn.execute("SELECT id FROM " + tables[entity_type] + " WHERE id=?", (entity_id,)).fetchone(): raise ApiError("Map entity not found", 404)
+        conn.execute("INSERT INTO operational_locations(entity_type,entity_id,latitude,longitude,accuracy_m,consented,verified,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(entity_type,entity_id) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,accuracy_m=excluded.accuracy_m,consented=excluded.consented,verified=excluded.verified,updated_by=excluded.updated_by,updated_at=excluded.updated_at", (entity_type,entity_id,float(lat),float(lon),float(accuracy) if accuracy is not None else None,1,1,current_user()["id"],now_iso()))
+        security_event("LOCATION_UPDATE", "MEDIUM", current_user()["id"], {"entity_type": entity_type, "entity_id": entity_id}); conn.commit()
+        return jsonify({"updated": True, "entity_type": entity_type, "entity_id": entity_id, "latitude": lat, "longitude": lon})
+
+    @app.get("/api/map/mine")
+    @login_required
+    def map_mine():
+        rows = get_db().execute("SELECT l.entity_type,l.entity_id,l.latitude,l.longitude,l.accuracy_m,l.updated_at,s.tracking_id,s.status FROM operational_locations l JOIN submissions s ON s.id=l.entity_id WHERE l.entity_type='SUBMISSION' AND s.user_id=? AND l.verified=1 AND l.consented=1", (current_user()["id"],)).fetchall()
+        return jsonify({"markers": [dict(r) for r in rows], "coordinates_available": bool(rows), "privacy_note": "Only your consented submission locations are shown."})
+
+    @app.get("/api/distributor/map")
+    @login_required
+    def distributor_map():
+        distributor = distributor_for_user()
+        rows = get_db().execute("SELECT l.entity_type,l.entity_id,l.latitude,l.longitude,l.accuracy_m,l.updated_at,s.tracking_id,s.status FROM operational_locations l JOIN submissions s ON s.id=l.entity_id JOIN assignments a ON a.submission_id=s.id WHERE l.entity_type='SUBMISSION' AND a.distributor_id=? AND l.verified=1 AND l.consented=1", (distributor["id"],)).fetchall()
+        return jsonify({"markers": [dict(r) for r in rows], "coordinates_available": bool(rows), "privacy_note": "Only locations assigned to your verified distributor account are shown."})
 
     @app.get("/api/qr/<token>")
     def public_qr_tracking(token):
+        if not public_lookup_allowed("qr"):
+            raise ApiError("Too many tracking lookups; try again later", 429)
         row=get_db().execute("SELECT s.tracking_id,s.device_name,s.category,s.quantity,s.status,s.recommendation FROM qr_tracking q JOIN submissions s ON s.id=q.submission_id WHERE q.token=?", (token,)).fetchone()
         if not row: raise ApiError("QR tracking code not found",404)
         return jsonify({"valid": True, **dict(row), "public_safe": True})
 
     @app.get("/api/qr-image/<token>.svg")
     def public_qr_svg(token):
+        if not public_lookup_allowed("qr-image"):
+            raise ApiError("Too many QR lookups; try again later", 429)
         row = get_db().execute("SELECT token FROM qr_tracking WHERE token=?", (token,)).fetchone()
         if not row: raise ApiError("QR tracking code not found", 404)
         if qrcode is None or SvgPathImage is None:
@@ -1104,8 +1204,9 @@ def create_app(db_path=None):
         try: conn.execute("INSERT INTO processing_records (submission_id,facility_id,outcome,processed_quantity,evidence_note,processed_at,created_by) VALUES (?,?,?,?,?,?,?)", (sub["id"],facility_id,outcome,qty,evidence,processed_at,current_user()["id"]))
         except sqlite3.IntegrityError: raise ApiError("Processing record already exists", 409)
         conn.execute("UPDATE submissions SET status='PROCESSED',updated_at=? WHERE id=?", (now_iso(),sub["id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (sub["id"],"PROCESSED", "Processing completed: " + outcome));
+        certificate = issue_certificate_record(conn, sub["id"], current_user()["id"])
         if sub["user_id"]: notify(sub["user_id"], "PROCESSING_COMPLETED", "Your e-waste processing record is complete.", conn)
-        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)", (current_user()["id"],"PROCESSING_COMPLETED","submission",tracking_id,json.dumps({"outcome":outcome,"facility_id":facility_id}))); conn.commit(); return jsonify({"tracking_id": tracking_id, "status": "PROCESSED", "outcome": outcome}), 201
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)", (current_user()["id"],"PROCESSING_COMPLETED","submission",tracking_id,json.dumps({"outcome":outcome,"facility_id":facility_id}))); conn.commit(); return jsonify({"tracking_id": tracking_id, "status": "PROCESSED", "outcome": outcome, "certificate_no": certificate["certificate_no"]}), 201
 
     # --------------------------------------------------------- operations
     @app.get("/api/pickup-slots")
@@ -1169,17 +1270,54 @@ def create_app(db_path=None):
         conn.commit()
         return jsonify({"tracking_id": tracking_id, "status": "COLLECTION_SCHEDULED", "pickup_id": pickup_cur.lastrowid}), 201
 
-    @app.get("/api/certificates/<token>")
-    def verify_certificate(token):
-        row = get_db().execute("SELECT c.certificate_no, c.issued_at, c.revoked_at, s.tracking_id, s.device_name, s.quantity, s.category FROM certificates c JOIN submissions s ON s.id=c.submission_id WHERE c.verification_token=?", (token,)).fetchone()
+    def certificate_row(identifier):
+        return get_db().execute("""SELECT c.id,c.certificate_no,c.verification_token,c.issued_at,c.revoked_at,
+            s.tracking_id,s.device_name,s.brand,s.quantity,s.category,s.user_id,
+            u.name AS user_name, p.processed_at,p.outcome,f.name AS facility_name
+            FROM certificates c JOIN submissions s ON s.id=c.submission_id
+            LEFT JOIN users u ON u.id=s.user_id
+            LEFT JOIN processing_records p ON p.submission_id=s.id
+            LEFT JOIN facilities f ON f.id=p.facility_id
+            WHERE c.verification_token=? OR c.certificate_no=?""", (identifier, identifier)).fetchone()
+
+    @app.get("/api/certificates/<identifier>")
+    def verify_certificate(identifier):
+        if not public_lookup_allowed("certificate"):
+            raise ApiError("Too many verification attempts; try again later", 429)
+        row = certificate_row(identifier)
         if not row: raise ApiError("Certificate not found", 404)
-        return jsonify({"valid": row["revoked_at"] is None, **dict(row)})
+        result = {k: row[k] for k in ("certificate_no", "issued_at", "revoked_at", "tracking_id", "device_name", "quantity", "category", "processed_at", "outcome", "facility_name")}
+        return jsonify({"valid": row["revoked_at"] is None, "public_safe": True, **result})
+
+    @app.get("/api/certificates/<identifier>/pdf")
+    def certificate_pdf(identifier):
+        row = certificate_row(identifier); actor = current_user()
+        if not row: raise ApiError("Certificate not found", 404)
+        if actor is None: raise ApiError("Please log in first", 401)
+        if actor["role"] != "admin" and row["user_id"] != actor["id"]:
+            raise ApiError("Certificate access denied", 403)
+        if pdf_canvas is None or qrcode is None:
+            raise ApiError("PDF generation is unavailable on this deployment", 503)
+        buffer = io.BytesIO(); pdf = pdf_canvas.Canvas(buffer, pagesize=A4); width, height = A4
+        pdf.setTitle("E-Cycle Processing Certificate " + row["certificate_no"])
+        pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.setFont("Helvetica-Bold", 22); pdf.drawString(60, height - 80, "E-Cycle")
+        pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica-Bold", 18); pdf.drawString(60, height - 115, "Processing Record")
+        pdf.setFont("Helvetica", 10); pdf.drawString(60, height - 140, "E-Cycle-issued recycling/processing record; not a statutory certificate.")
+        y = height - 190; pdf.setFont("Helvetica-Bold", 11)
+        fields = [("Certificate ID", row["certificate_no"]), ("User", row["user_name"] or "Account holder"), ("Tracking ID", row["tracking_id"]), ("Device", row["device_name"]), ("Category", row["category"]), ("Quantity", str(row["quantity"])), ("Facility", row["facility_name"] or "Recorded facility"), ("Outcome", row["outcome"] or "Processed"), ("Processing date", row["processed_at"] or row["issued_at"]), ("Status", "REVOKED" if row["revoked_at"] else "VERIFIED PROCESSING RECORD")]
+        for label, value in fields:
+            pdf.drawString(70, y, label + ":"); pdf.setFont("Helvetica", 11); pdf.drawString(190, y, str(value)); pdf.setFont("Helvetica-Bold", 11); y -= 25
+        qr = qrcode.make(request.host_url.rstrip("/") + "/certificate.html?token=" + row["verification_token"]); qr_buffer = io.BytesIO(); qr.save(qr_buffer, format="PNG"); qr_buffer.seek(0)
+        pdf.drawImage(ImageReader(qr_buffer), width - 180, height - 280, width=110, height=110, preserveAspectRatio=True, mask="auto")
+        pdf.setFont("Helvetica", 9); pdf.drawString(60, 55, "Verify at " + request.host_url.rstrip("/") + "/certificate.html")
+        pdf.showPage(); pdf.save(); buffer.seek(0)
+        return Response(buffer.getvalue(), mimetype="application/pdf", headers={"Content-Disposition": 'attachment; filename="' + row["certificate_no"] + '.pdf"'})
 
     @app.get("/api/certificates/mine")
     @login_required
     def my_certificates():
         rows = get_db().execute("SELECT c.certificate_no,c.verification_token,c.issued_at,c.revoked_at,s.tracking_id,s.device_name,s.quantity,s.category FROM certificates c JOIN submissions s ON s.id=c.submission_id WHERE s.user_id=? ORDER BY c.id DESC", (current_user()["id"],)).fetchall()
-        return jsonify({"certificates": [dict(r) for r in rows]})
+        return jsonify({"certificates": [{**dict(r), "pdf_url": request.host_url.rstrip("/") + "/api/certificates/" + r["verification_token"] + "/pdf"} for r in rows]})
 
     @app.get("/api/pickups/mine")
     @login_required
@@ -1260,12 +1398,33 @@ def create_app(db_path=None):
         if not sub: raise ApiError("Submission not found", 404)
         if sub["status"] != "PROCESSED": raise ApiError("Certificates require a processed submission", 409)
         if conn.execute("SELECT 1 FROM certificates WHERE submission_id=?", (sub["id"],)).fetchone(): raise ApiError("A certificate already exists", 409)
-        no = "EC-CERT-" + date.today().strftime("%Y%m%d") + "-" + secrets.token_hex(4).upper()
-        token = secrets.token_urlsafe(24)
-        conn.execute("INSERT INTO certificates (certificate_no,submission_id,verification_token) VALUES (?,?,?)", (no, sub["id"], token))
-        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"], "ISSUE_CERTIFICATE", "submission", tracking_id))
-        conn.commit()
-        return jsonify({"certificate_no": no, "verification_token": token}), 201
+        record = issue_certificate_record(conn, sub["id"], current_user()["id"])
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"], "ISSUE_CERTIFICATE", "submission", tracking_id)); conn.commit()
+        return jsonify({"certificate_no": record["certificate_no"], "verification_token": record["verification_token"], "pdf_url": request.host_url.rstrip("/") + "/api/certificates/" + record["verification_token"] + "/pdf"}), 201
+
+    @app.get("/api/admin/certificates")
+    @admin_required
+    def admin_certificates():
+        rows = get_db().execute("""SELECT c.certificate_no,c.verification_token,c.issued_at,c.revoked_at,
+            s.tracking_id,s.device_name,s.quantity,s.category,u.name AS user_name,
+            f.name AS facility_name,p.processed_at,p.outcome
+            FROM certificates c JOIN submissions s ON s.id=c.submission_id
+            LEFT JOIN users u ON u.id=s.user_id LEFT JOIN processing_records p ON p.submission_id=s.id
+            LEFT JOIN facilities f ON f.id=p.facility_id ORDER BY c.id DESC LIMIT 500""").fetchall()
+        return jsonify({"certificates": [dict(r) for r in rows]})
+
+    @app.patch("/api/admin/certificates/<certificate_no>")
+    @admin_required
+    def admin_revoke_certificate(certificate_no):
+        d = body(); action = d.get("action", "revoke").lower(); reason = text(d, "reason", "Reason", 5, 500)
+        if action != "revoke": raise ApiError("Only revoke is supported", field="action")
+        conn = get_db(); row = conn.execute("SELECT id,revoked_at FROM certificates WHERE certificate_no=?", (certificate_no.upper(),)).fetchone()
+        if not row: raise ApiError("Certificate not found", 404)
+        if row["revoked_at"]: raise ApiError("Certificate is already revoked", 409)
+        conn.execute("UPDATE certificates SET revoked_at=? WHERE id=?", (now_iso(), row["id"]))
+        conn.execute("INSERT INTO certificate_audits(certificate_id,action,reason,actor_user_id) VALUES (?,?,?,?)", (row["id"], "REVOKED", reason, current_user()["id"]))
+        conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,metadata) VALUES (?,?,?,?,?)", (current_user()["id"], "REVOKE_CERTIFICATE", "certificate", certificate_no.upper(), json.dumps({"reason": reason})))
+        conn.commit(); return jsonify({"certificate_no": certificate_no.upper(), "revoked": True})
 
     @app.post("/api/assistant/chat")
     def assistant_chat():

@@ -258,6 +258,9 @@ class StaticTests(Base):
     def test_pages_served_and_traversal_blocked(self):
         self.assertEqual(self.c.get("/").status_code, 200)
         self.assertEqual(self.c.get("/login.html").status_code, 200)
+        self.assertEqual(self.c.get("/admin/login").status_code, 200)
+        self.assertEqual(self.c.get("/certificate.html").status_code, 200)
+        self.assertEqual(self.c.get("/map.html").status_code, 200)
         self.assertEqual(self.c.get("/css/style.css").status_code, 200)
         self.assertEqual(self.c.get("/../backend/app.py").status_code, 404)
         self.assertEqual(self.c.get("/%2e%2e/backend/app.py").status_code, 404)

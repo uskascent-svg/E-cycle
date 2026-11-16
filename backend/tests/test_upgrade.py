@@ -6,6 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("ECYCLE_SECRET_KEY", "upgrade-test-secret")
 os.environ["ECYCLE_ADMIN_PASSWORD"] = "AdminPass123"
+os.environ.setdefault("ADMIN_ACCESS_CODE", "test-admin-access")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import app
 import db
@@ -44,6 +45,15 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(rewards.status_code, 200)
         self.assertEqual(rewards.get_json()["points"], 10)
 
+    def test_shared_admin_access_code_is_server_side_and_scoped(self):
+        code_client = self.application.test_client()
+        bad = code_client.post("/api/auth/admin-code", json={"access_code": "wrong"})
+        self.assertEqual(bad.status_code, 401)
+        good = code_client.post("/api/auth/admin-code", json={"access_code": "test-admin-access"})
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(code_client.get("/api/admin/summary").status_code, 200)
+        self.assertEqual(code_client.get("/api/submissions/mine").status_code, 401)
+
     def test_admin_upgrade_endpoints_are_protected_and_operational(self):
         self.assertEqual(self.client.get("/api/admin/summary").status_code, 403)
         admin = self.admin()
@@ -65,10 +75,27 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(admin.patch("/api/admin/users/1", json={"role": "user"}).status_code, 409)
         self.assertEqual(self.client.post("/api/auth/logout", headers={"Origin": "https://attacker.invalid"}).status_code, 403)
 
+    def test_verified_location_and_certificate_pdf_access(self):
+        admin = self.admin()
+        submission = self.client.post("/api/submissions", json={"category": "Laptop", "device_name": "Latitude", "quantity": 1, "condition": "working", "location": "Nashik"}).get_json()
+        conn = db.connect(self.path); submission_id = conn.execute("SELECT id FROM submissions WHERE tracking_id=?", (submission["tracking_id"],)).fetchone()[0]; conn.close()
+        self.assertEqual(admin.post("/api/admin/locations", json={"entity_type": "SUBMISSION", "entity_id": submission_id, "latitude": 91, "longitude": 77, "consented": True}).status_code, 400)
+        self.assertEqual(admin.post("/api/admin/locations", json={"entity_type": "SUBMISSION", "entity_id": submission_id, "latitude": 20.0, "longitude": 73.78, "consented": True}).status_code, 200)
+        self.assertTrue(admin.get("/api/admin/collection-map").get_json()["markers"])
+        for status in ("VERIFIED", "COLLECTION_SCHEDULED", "COLLECTED", "PROCESSED"):
+            self.assertEqual(admin.patch("/api/admin/submissions/" + submission["tracking_id"] + "/status", json={"status": status}).status_code, 200)
+        issued = admin.post("/api/admin/certificates", json={"tracking_id": submission["tracking_id"]}).get_json()
+        self.assertEqual(self.client.get("/api/certificates/" + issued["certificate_no"]).status_code, 200)
+        pdf = self.client.get("/api/certificates/" + issued["verification_token"] + "/pdf")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf.content_type, "application/pdf")
+        self.assertEqual(admin.patch("/api/admin/certificates/" + issued["certificate_no"], json={"action": "revoke", "reason": "Administrative correction"}).status_code, 200)
+
     def test_migration_marker_and_new_tables_are_additive(self):
         conn = db.connect(self.path)
         marker = conn.execute("SELECT version FROM schema_migrations WHERE version=?", ("2026-11-platform-upgrade",)).fetchone()
         self.assertIsNotNone(marker)
+        self.assertIsNotNone(conn.execute("SELECT version FROM schema_migrations WHERE version=?", ("2026-11-certificates-map-admin-code",)).fetchone())
         for table in ("qr_tracking", "green_wallets", "facility_inventory", "security_events", "collection_forecasts", "platform_settings"):
             self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
         conn.close()

@@ -20,3 +20,5 @@ services:
         sync: false
       - key: ECYCLE_ADMIN_PASSWORD
         sync: false
+      - key: ADMIN_ACCESS_CODE
+        sync: false

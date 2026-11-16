@@ -24,7 +24,7 @@ def init_schema(db_path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript((BASE / "schema.sql").read_text(encoding="utf-8"))
-        conn.execute("PRAGMA user_version = 2")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
     finally:
         conn.close()

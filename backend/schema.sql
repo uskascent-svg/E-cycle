@@ -99,6 +99,32 @@ CREATE TABLE IF NOT EXISTS certificates (
     revoked_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS certificate_audits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    certificate_id INTEGER NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
+    action TEXT NOT NULL CHECK (action IN ('ISSUED','REVOKED','REGENERATED')),
+    reason TEXT,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_certificate_audits_certificate ON certificate_audits(certificate_id, created_at);
+
+-- Only authorized, consented, verified coordinates are eligible for map output.
+CREATE TABLE IF NOT EXISTS operational_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('SUBMISSION','DISTRIBUTOR','FACILITY','DRIVE')),
+    entity_id INTEGER NOT NULL,
+    latitude REAL NOT NULL CHECK (latitude BETWEEN -90 AND 90),
+    longitude REAL NOT NULL CHECK (longitude BETWEEN -180 AND 180),
+    accuracy_m REAL CHECK (accuracy_m IS NULL OR accuracy_m >= 0),
+    consented INTEGER NOT NULL DEFAULT 0 CHECK (consented IN (0,1)),
+    verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0,1)),
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_operational_locations_entity ON operational_locations(entity_type, entity_id, verified, consented);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -339,3 +365,4 @@ CREATE TABLE IF NOT EXISTS platform_settings (
 );
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES ('2026-11-platform-upgrade');
+INSERT OR IGNORE INTO schema_migrations(version) VALUES ('2026-11-certificates-map-admin-code');
