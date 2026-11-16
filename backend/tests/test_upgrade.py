@@ -60,6 +60,11 @@ class UpgradeTests(unittest.TestCase):
             self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
         conn.close()
 
+    def test_login_rate_limit_is_enforced(self):
+        for _ in range(10):
+            self.assertEqual(self.application.test_client().post("/api/auth/login", json={"email": "wrong@example.com", "password": "wrong-password"}).status_code, 401)
+        self.assertEqual(self.application.test_client().post("/api/auth/login", json={"email": "wrong@example.com", "password": "wrong-password"}).status_code, 429)
+
 
 if __name__ == "__main__":
     unittest.main()

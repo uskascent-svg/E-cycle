@@ -94,6 +94,7 @@ def create_app(db_path=None):
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # no request here needs more than 64 KB
     assistant_requests = {}
+    login_attempts = {}
 
     db.init_schema(app.config["DB_PATH"])
 
@@ -305,6 +306,15 @@ def create_app(db_path=None):
         d = body()
         email = str(d.get("email", "")).strip().lower()
         password = str(d.get("password", ""))
+        now = datetime.now(timezone.utc).timestamp()
+        source = request.remote_addr or "unknown"
+        recent = [t for t in login_attempts.get(source, []) if now - t < 300]
+        if len(recent) >= 10:
+            security_event("LOGIN_RATE_LIMIT", "HIGH", metadata={"window_seconds": 300})
+            get_db().commit()
+            raise ApiError("Too many login attempts; try again in a few minutes", 429)
+        recent.append(now)
+        login_attempts[source] = recent
         row = get_db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         ok = check_password_hash(row["password_hash"] if row else _DUMMY_HASH, password)
         if not (row and ok):
@@ -314,6 +324,7 @@ def create_app(db_path=None):
         session.clear()
         session.permanent = True
         session["user_id"] = row["id"]
+        login_attempts.pop(source, None)
         security_event("LOGIN_SUCCESS", "INFO", row["id"])
         get_db().commit()
         return jsonify({"user": user_json(row)})
