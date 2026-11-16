@@ -111,6 +111,10 @@ def create_app(db_path=None):
     demo_conn = db.connect(app.config["DB_PATH"])
     demo_data.create_schema(demo_conn)
     demo_conn.commit()
+    # Keep the presentation inputs available in the normal admin workflow while
+    # leaving every live production table untouched.
+    if demo_data.counts(demo_conn)["total"] == 0:
+        demo_data.reset(demo_conn)
     demo_conn.close()
 
     # ---------------------------------------------------------------- plumbing
@@ -754,6 +758,32 @@ def create_app(db_path=None):
             demo_enabled(conn)
             rows = conn.execute("SELECT c.certificate_no,c.verification_token,c.issued_at,s.tracking_id,s.category,s.quantity FROM demo_certificates c JOIN demo_submissions s ON s.id=c.submission_id ORDER BY c.id").fetchall()
             return jsonify({"demo": True, "watermark": "SAMPLE / DEMONSTRATION ONLY", "certificates": [dict(row) for row in rows]})
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/demo/inputs")
+    @admin_required(permission="submissions.read")
+    def admin_demo_inputs():
+        conn = demo_db()
+        try:
+            demo_enabled(conn)
+            rows = conn.execute("SELECT id,tracking_id,demo_name,category,device_name,quantity,city,locality,status,created_at FROM demo_submissions ORDER BY id").fetchall()
+            return jsonify({"demo": True, "label": "SAMPLE INPUTS — ISOLATED FROM LIVE DATA", "submissions": [dict(row) | {"is_demo": True, "next_status": {"SUBMITTED":"VERIFIED","VERIFIED":"COLLECTION_SCHEDULED","COLLECTION_SCHEDULED":"COLLECTED","COLLECTED":"PROCESSED"}.get(row["status"])} for row in rows]})
+        finally:
+            conn.close()
+
+    @app.patch("/api/admin/demo/inputs/<tracking_id>/status")
+    @admin_required(permission="submissions.write")
+    def admin_demo_input_status(tracking_id):
+        payload = body(); new_status = payload.get("status")
+        allowed = {"SUBMITTED":"VERIFIED", "VERIFIED":"COLLECTION_SCHEDULED", "COLLECTION_SCHEDULED":"COLLECTED", "COLLECTED":"PROCESSED"}
+        conn = demo_db()
+        try:
+            row = conn.execute("SELECT id,status FROM demo_submissions WHERE tracking_id=?", (tracking_id.strip().upper(),)).fetchone()
+            if not row: raise ApiError("Demo input not found", 404)
+            if allowed.get(row["status"]) != new_status: raise ApiError("Demo input can only advance to its next workflow status", 409)
+            conn.execute("UPDATE demo_submissions SET status=? WHERE id=?", (new_status, row["id"])); conn.commit()
+            return jsonify({"demo": True, "tracking_id": tracking_id.strip().upper(), "status": new_status})
         finally:
             conn.close()
 
@@ -1672,10 +1702,6 @@ User message:
     @app.get("/admin/dashboard")
     def admin_dashboard_page():
         return send_from_directory(FRONTEND, "admin-dashboard.html")
-
-    @app.get("/admin/demo")
-    def admin_demo_page():
-        return send_from_directory(FRONTEND, "admin-demo.html")
 
     @app.get("/admin/<section>")
     def admin_section_page(section):
