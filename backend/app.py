@@ -670,10 +670,10 @@ def create_app(db_path=None):
             "demo_completed_drives": 3,
             "demo_distribution": demo_dist,
             "distribution": {
-                "reuse": dist.get(rules.RECOMMENDATIONS["working"], 0) + demo_dist["reuse"],
-                "repair": dist.get(rules.RECOMMENDATIONS["partially_working"], 0) + demo_dist["repair"],
-                "recycle": dist.get(rules.RECOMMENDATIONS["non_working"], 0) + demo_dist["recycle"],
-                "specialized": dist.get(rules.SPECIALIZED, 0) + demo_dist["specialized"],
+                "reuse": dist.get(rules.RECOMMENDATIONS["working"], 0),
+                "repair": dist.get(rules.RECOMMENDATIONS["partially_working"], 0),
+                "recycle": dist.get(rules.RECOMMENDATIONS["non_working"], 0),
+                "specialized": dist.get(rules.SPECIALIZED, 0),
             },
         })
 
