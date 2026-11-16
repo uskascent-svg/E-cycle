@@ -767,8 +767,16 @@ def create_app(db_path=None):
         conn = demo_db()
         try:
             demo_enabled(conn)
-            rows = conn.execute("SELECT id,tracking_id,demo_name,category,device_name,quantity,city,locality,status,created_at FROM demo_submissions ORDER BY id").fetchall()
-            return jsonify({"demo": True, "label": "SAMPLE INPUTS — ISOLATED FROM LIVE DATA", "submissions": [dict(row) | {"is_demo": True, "next_status": {"SUBMITTED":"VERIFIED","VERIFIED":"COLLECTION_SCHEDULED","COLLECTION_SCHEDULED":"COLLECTED","COLLECTED":"PROCESSED"}.get(row["status"])} for row in rows]})
+            next_status = {"SUBMITTED":"VERIFIED", "VERIFIED":"COLLECTION_SCHEDULED", "COLLECTION_SCHEDULED":"COLLECTED", "COLLECTED":"PROCESSED"}
+            records = []
+            for row in conn.execute("SELECT tracking_id reference,demo_name name,category,city locality,status,created_at FROM demo_submissions ORDER BY id"):
+                records.append(dict(row) | {"record_type":"E-waste submission", "is_demo":True, "next_status":next_status.get(row["status"])})
+            queries = (("Pickup", "SELECT s.tracking_id reference,'Pickup request' name,'Pickup' category,s.city locality,p.status,p.created_at FROM demo_pickups p JOIN demo_submissions s ON s.id=p.submission_id"), ("Distributor assignment", "SELECT s.tracking_id reference,a.distributor_name name,s.category,s.city locality,a.status,a.assigned_at created_at FROM demo_assignments a JOIN demo_submissions s ON s.id=a.submission_id"), ("Collection centre", "SELECT 'DEMO-CENTRE-'||id reference,name, 'Operations' category,city locality,status,'2026-10-01T00:00:00Z' created_at FROM demo_centres"), ("Facility", "SELECT 'DEMO-FACILITY-'||id reference,name,'Processing' category,city locality,status,'2026-10-01T00:00:00Z' created_at FROM demo_facilities"), ("Processing", "SELECT s.tracking_id reference,f.name,'Processing' category,f.city locality,'PROCESSED' status,p.processed_at created_at FROM demo_processing p JOIN demo_submissions s ON s.id=p.submission_id JOIN demo_facilities f ON f.id=p.facility_id"), ("Certificate", "SELECT certificate_no reference,'Sample certificate' name,'Certificate' category,'E-Cycle' locality,'SAMPLE' status,issued_at created_at FROM demo_certificates"), ("Community drive", "SELECT 'DEMO-DRIVE-'||id reference,title,'Community drive' category,city locality,status,drive_date||'T12:00:00Z' created_at FROM demo_drives"), ("Notification", "SELECT 'DEMO-NOTIFICATION-'||id reference,event_type name,'Activity' category,'E-Cycle' locality,'SAMPLE' status,created_at FROM demo_notifications"))
+            for record_type, query in queries:
+                for row in conn.execute(query): records.append(dict(row) | {"record_type":record_type, "is_demo":True, "next_status":None})
+            records.sort(key=lambda row: row["created_at"], reverse=True)
+            display_records = [record | {"tracking_id": record["reference"], "city": record["locality"], "locality": record["record_type"]} for record in records]
+            return jsonify({"demo": True, "label": "100 SAMPLE RECORDS — ISOLATED FROM LIVE DATA", "records": records, "submissions": display_records})
         finally:
             conn.close()
 

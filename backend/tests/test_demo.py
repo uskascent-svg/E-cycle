@@ -29,8 +29,8 @@ class DemoTests(unittest.TestCase):
 
     def test_demo_inputs_are_available_in_normal_admin_workflow(self):
         inputs = self.admin.get("/api/admin/demo/inputs"); self.assertEqual(inputs.status_code, 200)
-        rows = inputs.get_json()["submissions"]; self.assertEqual(len(rows), 35); self.assertTrue(all(row["is_demo"] for row in rows))
-        first = rows[0]; result = self.admin.patch("/api/admin/demo/inputs/" + first["tracking_id"] + "/status", json={"status": first["next_status"]})
+        rows = inputs.get_json()["submissions"]; self.assertEqual(len(rows), 100); self.assertTrue(all(row["is_demo"] for row in rows))
+        first = next(row for row in rows if row["next_status"]); result = self.admin.patch("/api/admin/demo/inputs/" + first["tracking_id"] + "/status", json={"status": first["next_status"]})
         self.assertEqual(result.status_code, 200); conn = db.connect(self.path); self.assertEqual(conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0], 0); conn.close()
 
     def test_controls_qr_pdf_and_production_isolation(self):
