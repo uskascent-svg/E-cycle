@@ -41,6 +41,7 @@ except ImportError:  # PDF download reports a clear, actionable 503 fallback
 
 import db
 import rules
+import demo_data
 
 BASE = Path(__file__).resolve().parent
 FRONTEND = BASE.parent / "frontend"
@@ -106,6 +107,11 @@ def create_app(db_path=None):
     public_lookup_attempts = {}
 
     db.init_schema(app.config["DB_PATH"])
+    # Demo tables are additive and isolated from all production workflow tables.
+    demo_conn = db.connect(app.config["DB_PATH"])
+    demo_data.create_schema(demo_conn)
+    demo_conn.commit()
+    demo_conn.close()
 
     # ---------------------------------------------------------------- plumbing
     def get_db():
@@ -657,6 +663,156 @@ def create_app(db_path=None):
         })
 
     # ------------------------------------------------------------------- admin
+    def demo_db():
+        return db.connect(app.config["DB_PATH"])
+
+    def demo_enabled(conn):
+        state = demo_data.control(conn)
+        if not state["enabled"]:
+            raise ApiError("Demo mode is disabled", 409)
+        return state
+
+    @app.get("/api/admin/demo/status")
+    @admin_required(permission="analytics.read")
+    def admin_demo_status():
+        conn = demo_db()
+        try:
+            state = dict(demo_data.control(conn))
+            return jsonify({"enabled": bool(state["enabled"]), "feed_running": bool(state["feed_running"]), "feed_cursor": state["feed_cursor"], "counts": demo_data.counts(conn)})
+        finally:
+            conn.close()
+
+    @app.post("/api/admin/demo/reset")
+    @admin_required(permission="settings.write")
+    def admin_demo_reset():
+        conn = demo_db()
+        try:
+            result = demo_data.reset(conn)
+            return jsonify({"message": "Exactly 100 isolated demo records reset", "counts": result, "demo": True})
+        finally:
+            conn.close()
+
+    @app.patch("/api/admin/demo/control")
+    @admin_required(permission="settings.write")
+    def admin_demo_control():
+        payload = body()
+        updates = []
+        values = []
+        for key in ("enabled", "feed_running"):
+            if key in payload:
+                if not isinstance(payload[key], bool):
+                    raise ApiError(f"{key} must be boolean", field=key)
+                updates.append(f"{key}=?")
+                values.append(int(payload[key]))
+        if not updates:
+            raise ApiError("Provide enabled and/or feed_running")
+        conn = demo_db()
+        try:
+            values.append(1)
+            conn.execute("UPDATE demo_controls SET " + ",".join(updates) + ",updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", values)
+            conn.commit()
+            state = dict(demo_data.control(conn))
+            return jsonify({"enabled": bool(state["enabled"]), "feed_running": bool(state["feed_running"])})
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/demo/summary")
+    @admin_required(permission="analytics.read")
+    def admin_demo_summary():
+        conn = demo_db()
+        try:
+            demo_enabled(conn)
+            return jsonify(demo_data.summary(conn) | {"demo": True, "label": "DEMO MODE — SAMPLE DATA ONLY"})
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/demo/feed")
+    @admin_required(permission="analytics.read")
+    def admin_demo_feed():
+        conn = demo_db()
+        try:
+            demo_enabled(conn)
+            return jsonify(demo_data.feed(conn, request.args.get("advance") == "1"))
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/demo/map")
+    @admin_required(permission="analytics.read")
+    def admin_demo_map():
+        conn = demo_db()
+        try:
+            demo_enabled(conn)
+            return jsonify(demo_data.map_data(conn))
+        finally:
+            conn.close()
+
+    @app.get("/api/admin/demo/certificates")
+    @admin_required(permission="analytics.read")
+    def admin_demo_certificates():
+        conn = demo_db()
+        try:
+            demo_enabled(conn)
+            rows = conn.execute("SELECT c.certificate_no,c.verification_token,c.issued_at,s.tracking_id,s.category,s.quantity FROM demo_certificates c JOIN demo_submissions s ON s.id=c.submission_id ORDER BY c.id").fetchall()
+            return jsonify({"demo": True, "watermark": "SAMPLE / DEMONSTRATION ONLY", "certificates": [dict(row) for row in rows]})
+        finally:
+            conn.close()
+
+    @app.get("/api/demo/certificates/<identifier>")
+    def demo_certificate(identifier):
+        conn = demo_db()
+        try:
+            if not demo_data.control(conn)["enabled"]:
+                raise ApiError("Demo mode is disabled", 404)
+            row = demo_data.certificate(conn, identifier)
+            if not row:
+                raise ApiError("Demo certificate not found", 404)
+            return jsonify({**dict(row), "demo": True, "watermarked": True, "label": "SAMPLE / DEMONSTRATION ONLY"})
+        finally:
+            conn.close()
+
+    @app.get("/api/demo/qr/<token>")
+    def demo_qr(token):
+        conn = demo_db()
+        try:
+            if not demo_data.control(conn)["enabled"]:
+                raise ApiError("Demo mode is disabled", 404)
+            row = demo_data.certificate(conn, token)
+            if not row:
+                raise ApiError("Demo QR token not found", 404)
+            return jsonify({"valid": True, "demo": True, "watermarked": True, "certificate_no": row["certificate_no"], "tracking_id": row["tracking_id"], "status": "SAMPLE / DEMONSTRATION ONLY"})
+        finally:
+            conn.close()
+
+    @app.get("/api/demo/certificates/<identifier>/pdf")
+    def demo_certificate_pdf(identifier):
+        if pdf_canvas is None or qrcode is None:
+            raise ApiError("PDF dependencies are unavailable", 503)
+        conn = demo_db()
+        try:
+            if not demo_data.control(conn)["enabled"]:
+                raise ApiError("Demo mode is disabled", 404)
+            row = demo_data.certificate(conn, identifier)
+            if not row:
+                raise ApiError("Demo certificate not found", 404)
+            output = io.BytesIO(); canvas = pdf_canvas.Canvas(output, pagesize=A4)
+            width, height = A4
+            canvas.saveState(); canvas.setFillColorRGB(0.75, 0.1, 0.1); canvas.setFont("Helvetica-Bold", 28)
+            canvas.translate(width / 2, height / 2); canvas.rotate(35); canvas.drawCentredString(0, 0, "SAMPLE / DEMONSTRATION ONLY"); canvas.restoreState()
+            canvas.setFillColorRGB(0.05, 0.35, 0.18); canvas.setFont("Helvetica-Bold", 22); canvas.drawString(55, height - 70, "E-Cycle Demonstration Record")
+            canvas.setFillColorRGB(0.75, 0.1, 0.1); canvas.setFont("Helvetica-Bold", 12); canvas.drawString(55, height - 95, "SAMPLE / DEMONSTRATION ONLY — NOT A REAL CERTIFICATE")
+            canvas.setFillColorRGB(0, 0, 0); canvas.setFont("Helvetica", 12)
+            y = height - 145
+            for label, value in (("Certificate", row["certificate_no"]), ("Tracking ID", row["tracking_id"]), ("Category", row["category"]), ("Device", row["device_name"]), ("Quantity", str(row["quantity"])), ("Facility", row["facility_name"]), ("Outcome", row["outcome"]), ("Issued", row["issued_at"])):
+                canvas.drawString(60, y, f"{label}: {value}"); y -= 24
+            qr = qrcode.make(request.host_url.rstrip("/") + "/api/demo/qr/" + row["verification_token"])
+            qr_buf = io.BytesIO(); qr.save(qr_buf, format="PNG"); qr_buf.seek(0)
+            canvas.drawImage(ImageReader(qr_buf), width - 190, height - 300, width=120, height=120)
+            canvas.setFont("Helvetica-Oblique", 9); canvas.drawString(55, 55, "Demonstration data is isolated from live operations and contains fictional records.")
+            canvas.showPage(); canvas.save(); output.seek(0)
+            return Response(output.getvalue(), mimetype="application/pdf", headers={"Content-Disposition": f"inline; filename={row['certificate_no']}.pdf"})
+        finally:
+            conn.close()
+
     @app.get("/api/admin/submissions")
     @admin_required
     def admin_list():
@@ -1516,6 +1672,10 @@ User message:
     @app.get("/admin/dashboard")
     def admin_dashboard_page():
         return send_from_directory(FRONTEND, "admin-dashboard.html")
+
+    @app.get("/admin/demo")
+    def admin_demo_page():
+        return send_from_directory(FRONTEND, "admin-demo.html")
 
     @app.get("/admin/<section>")
     def admin_section_page(section):

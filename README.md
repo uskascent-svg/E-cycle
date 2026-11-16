@@ -200,3 +200,9 @@ coordinates stored in `operational_locations`. It deliberately shows an empty ma
 real coordinates exist and falls back to the operational list API. Admins can record a
 coordinate through `POST /api/admin/locations`; latitude/longitude bounds and explicit
 consent are required. Users and verified distributors receive only their permitted markers.
+# Phase 17: isolated presentation demo mode
+
+The admin-only page `/admin/demo` provides a clearly labelled presentation dataset. Resetting it creates exactly 100 fictional, interconnected records in dedicated `demo_*` tables: 35 submissions, 15 pickups, 10 assignments, 5 collection centres, 5 facilities, 10 processing records, 10 watermarked sample certificates, 5 community drives and 5 demo notifications. It never inserts into or deletes from live workflow tables.
+
+The demo API supports status, reset, enable/disable, feed pause/start, computed summaries, a sample-only map and demo certificate/QR/PDF verification. Every map marker and activity response is labelled `DEMO`; map coordinates are fixed valid city coordinates and are not live GPS. Demo certificates are marked `SAMPLE / DEMONSTRATION ONLY` and are not statutory certificates. Resetting is idempotent and only replaces demo tables.
+
