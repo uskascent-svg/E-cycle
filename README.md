@@ -152,9 +152,15 @@ New test coverage is in `backend/tests/test_upgrade.py`. Run the complete suite 
 python -m unittest discover -s backend/tests -v
 ```
 
-The admin portal uses the existing Flask session and admin authorization middleware. It is
-not secured by frontend visibility alone: every new admin endpoint checks authorization on
-the server.
+The admin portal uses the existing Flask session plus server-side RBAC. Legacy `admin`
+accounts are enrolled additively in `admin_roles` (the first bootstrap administrator is
+the Super Admin). Supported roles are Super Admin, Admin, Operations Manager, Distributor
+Manager, Facility Manager, and Read-only Auditor. Every admin API checks the active role
+and permission on the server; frontend visibility is never treated as authorization.
+`GET /api/admin/me`, `GET /api/admin/roles`, and `PATCH /api/admin/roles/<user_id>` expose
+the role administration workflow, with role changes restricted to Super Admins.
+`GET /api/admin/users/<user_id>` returns an authorized user activity view without any
+password material. State-changing API requests also reject a mismatched Origin header.
 
 ### Admin bootstrap and password recovery
 
@@ -162,7 +168,8 @@ Render runs `python backend/init_db.py` as an idempotent pre-deploy command. For
 database, set `ECYCLE_ADMIN_EMAIL` and `ECYCLE_ADMIN_PASSWORD` as private Render
 environment variables before the first deploy. The initializer creates the admin only when
 no admin account exists; it never resets, deletes, or overwrites an existing account.
-Passwords are stored only as hashes. If an existing administrator password is forgotten,
+Passwords are stored only as hashes. Deployment bootstrap never prints generated passwords
+to Render or CI logs. If an existing administrator password is forgotten,
 set a new value through the private Render environment and use an approved database/admin
 maintenance procedure; do not place credentials in source code, logs, or chat.
 For an authorized maintenance operator with access to the active database, the repository

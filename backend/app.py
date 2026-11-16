@@ -146,6 +146,10 @@ def create_app(db_path=None):
         # Cross-site HTML forms cannot send application/json without a CORS
         # preflight, so this doubles as a simple CSRF defence.
         if request.path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("Origin")
+            expected = request.host_url.rstrip("/")
+            if origin and origin.rstrip("/") != expected:
+                raise ApiError("Cross-origin write rejected", 403)
             if request.get_data(cache=True) and not request.is_json:
                 raise ApiError("Content-Type must be application/json", 415)
 
@@ -209,16 +213,69 @@ def create_app(db_path=None):
             return fn(*a, **kw)
         return wrapper
 
-    def admin_required(fn):
-        @wraps(fn)
-        def wrapper(*a, **kw):
-            user = current_user()
-            if user is None:
-                raise ApiError("Please log in first", 401)
-            if user["role"] != "admin":
-                raise ApiError("Admin access required", 403)
-            return fn(*a, **kw)
-        return wrapper
+    ROLE_PERMISSIONS = {
+        "Super Admin": {"*"},
+        "Admin": {"*"},
+        "Operations Manager": {"portal", "summary.read", "submissions.read", "submissions.write", "assignments.write", "certificates.write", "analytics.read", "reports.read"},
+        "Distributor Manager": {"portal", "summary.read", "distributors.read", "distributors.write", "assignments.write", "analytics.read"},
+        "Facility Manager": {"portal", "summary.read", "facilities.read", "facilities.write", "inventory.write", "analytics.read"},
+        "Read-only Auditor": {"portal", "summary.read", "submissions.read", "distributors.read", "facilities.read", "analytics.read", "security.read", "reports.read", "audit.read"},
+    }
+
+    def admin_permission_for_path(path):
+        if path.endswith("/users") or "/users/" in path:
+            return "users.write" if request.method != "GET" else "users.read"
+        if "/security" in path:
+            return "security.read"
+        if "/audit-logs" in path:
+            return "audit.read"
+        if "/distributor" in path or "/assignments" in path:
+            return "distributors.write" if request.method != "GET" else "distributors.read"
+        if "/facilit" in path or "/inventory" in path or "/processing" in path:
+            return "facilities.write" if request.method != "GET" else "facilities.read"
+        if "/certificate" in path or "/submissions" in path or "/pickup" in path or "/drive" in path:
+            return "submissions.write" if request.method != "GET" else "submissions.read"
+        if "/analytics" in path:
+            return "analytics.read"
+        if "/report" in path or "/export/" in path:
+            return "reports.write" if request.method != "GET" else "reports.read"
+        return "summary.read"
+
+    def admin_role(user):
+        conn = get_db()
+        role = conn.execute("SELECT role_name,active FROM admin_roles WHERE user_id=?", (user["id"],)).fetchone()
+        if role:
+            return role
+        # Legacy admin accounts remain usable, but are enrolled in the additive
+        # RBAC table. The first existing admin receives the bootstrap role.
+        role_name = "Super Admin" if conn.execute("SELECT COUNT(*) FROM admin_roles").fetchone()[0] == 0 else "Admin"
+        conn.execute("INSERT OR IGNORE INTO admin_roles(user_id,role_name) VALUES (?,?)", (user["id"], role_name))
+        conn.commit()
+        return conn.execute("SELECT role_name,active FROM admin_roles WHERE user_id=?", (user["id"],)).fetchone()
+
+    def admin_required(fn=None, permission=None):
+        def decorator(view):
+            @wraps(view)
+            def wrapper(*a, **kw):
+                user = current_user()
+                if user is None:
+                    raise ApiError("Please log in first", 401)
+                if user["role"] != "admin":
+                    raise ApiError("Admin access required", 403)
+                role = admin_role(user)
+                required = permission or admin_permission_for_path(request.path)
+                if not role["active"]:
+                    session.clear()
+                    raise ApiError("Administrator account is inactive", 403)
+                allowed = ROLE_PERMISSIONS.get(role["role_name"], set())
+                if "*" not in allowed and required not in allowed:
+                    security_event("ADMIN_PERMISSION_DENIED", "HIGH", user["id"], {"permission": required, "path": request.path})
+                    get_db().commit()
+                    raise ApiError("Insufficient administrator permission", 403)
+                g.admin_role = role["role_name"]
+                return view(*a, **kw)
+            return wrapper
+        return decorator(fn) if fn else decorator
 
     def user_json(u):
         return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"]}
@@ -645,13 +702,64 @@ def create_app(db_path=None):
             limit = min(max(int(request.args.get("limit", 50)), 1), 200)
         except ValueError:
             raise ApiError("limit must be a whole number", field="limit")
-        rows = get_db().execute("SELECT id,name,email,phone,address,role,created_at FROM users WHERE name LIKE ? OR email LIKE ? ORDER BY id DESC LIMIT ?", (f"%{q}%", f"%{q}%", limit)).fetchall()
+        rows = get_db().execute("""SELECT u.id,u.name,u.email,u.phone,u.address,u.role,u.created_at,
+            COALESCE(s.active,1) active, ar.role_name admin_role
+            FROM users u LEFT JOIN account_status s ON s.user_id=u.id
+            LEFT JOIN admin_roles ar ON ar.user_id=u.id
+            WHERE u.name LIKE ? OR u.email LIKE ? ORDER BY u.id DESC LIMIT ?""", (f"%{q}%", f"%{q}%", limit)).fetchall()
         return jsonify({"users": [dict(r) for r in rows]})
+
+    @app.get("/api/admin/me")
+    @admin_required(permission="portal")
+    def admin_me():
+        user = current_user()
+        role = admin_role(user)
+        return jsonify({"user": user_json(user), "admin_role": role["role_name"], "active": bool(role["active"]), "permissions": sorted(ROLE_PERMISSIONS.get(role["role_name"], set()))})
+
+    @app.get("/api/admin/roles")
+    @admin_required(permission="users.read")
+    def admin_roles_list():
+        rows = get_db().execute("SELECT ar.user_id,ar.role_name,ar.active,ar.created_at,ar.updated_at,u.name,u.email FROM admin_roles ar JOIN users u ON u.id=ar.user_id ORDER BY ar.id").fetchall()
+        return jsonify({"roles": [dict(r) for r in rows], "available": sorted(ROLE_PERMISSIONS)})
+
+    @app.patch("/api/admin/roles/<int:user_id>")
+    @admin_required(permission="users.write")
+    def admin_role_update(user_id):
+        actor = current_user()
+        if admin_role(actor)["role_name"] != "Super Admin":
+            raise ApiError("Only a Super Admin can manage administrator roles", 403)
+        d = body(); role_name = d.get("role_name")
+        if role_name not in ROLE_PERMISSIONS:
+            raise ApiError("Unknown administrator role", field="role_name")
+        target = get_db().execute("SELECT id,role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target or target["role"] != "admin":
+            raise ApiError("Administrator account not found", 404)
+        active = d.get("active", True)
+        if not isinstance(active, bool):
+            raise ApiError("active must be boolean", field="active")
+        conn = get_db()
+        conn.execute("INSERT INTO admin_roles(user_id,role_name,active,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET role_name=excluded.role_name,active=excluded.active,updated_at=excluded.updated_at", (user_id, role_name, int(active), now_iso()))
+        security_event("ADMIN_ROLE_UPDATE", "HIGH", actor["id"], {"user_id": user_id, "role_name": role_name, "active": active})
+        conn.commit()
+        return jsonify({"user_id": user_id, "role_name": role_name, "active": active})
+
+    @app.get("/api/admin/users/<int:user_id>")
+    @admin_required(permission="users.read")
+    def admin_user_activity(user_id):
+        conn = get_db(); user = conn.execute("SELECT id,name,email,phone,address,role,created_at FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            raise ApiError("User not found", 404)
+        submissions = conn.execute("SELECT tracking_id,device_name,category,quantity,status,created_at,updated_at FROM submissions WHERE user_id=? ORDER BY id DESC LIMIT 100", (user_id,)).fetchall()
+        notifications = conn.execute("SELECT event_type,message,read_at,created_at FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 50", (user_id,)).fetchall()
+        audits = conn.execute("SELECT action,entity_type,entity_id,metadata,created_at FROM audit_logs WHERE actor_user_id=? ORDER BY id DESC LIMIT 50", (user_id,)).fetchall()
+        return jsonify({"user": dict(user), "submissions": [dict(x) for x in submissions], "notifications": [dict(x) for x in notifications], "audit": [dict(x) for x in audits]})
 
     @app.patch("/api/admin/users/<int:user_id>")
     @admin_required
     def admin_update_user(user_id):
         d = body(); fields=[]; args=[]
+        if user_id == current_user()["id"] and d.get("role") == "user":
+            raise ApiError("You cannot remove your own administrator access", 409)
         if "role" in d:
             if d["role"] not in ("user", "admin"): raise ApiError("Invalid role", field="role")
             fields.append("role=?"); args.append(d["role"])
@@ -662,6 +770,10 @@ def create_app(db_path=None):
         if fields:
             args.append(user_id); cur=get_db().execute("UPDATE users SET " + ",".join(fields) + " WHERE id=?", args)
             if not cur.rowcount: raise ApiError("User not found",404)
+            if d.get("role") == "admin":
+                get_db().execute("INSERT OR IGNORE INTO admin_roles(user_id,role_name) VALUES (?, 'Admin')", (user_id,))
+            elif d.get("role") == "user":
+                get_db().execute("UPDATE admin_roles SET active=0,updated_at=? WHERE user_id=?", (now_iso(), user_id))
         security_event("ADMIN_USER_UPDATE", "MEDIUM", current_user()["id"], {"user_id": user_id, "fields": [f.split('=')[0] for f in fields]})
         get_db().commit(); return jsonify({"updated": True, "user_id": user_id})
 

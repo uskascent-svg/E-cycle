@@ -56,12 +56,13 @@ def seed(db_path):
             password = os.environ.get("ECYCLE_ADMIN_PASSWORD")
             if not password:
                 password = generated = secrets.token_urlsafe(9)
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO users (name, email, phone, password_hash, address, role) "
                 "VALUES (?,?,?,?,?,'admin')",
                 ("E-Cycle Admin", os.environ.get("ECYCLE_ADMIN_EMAIL", "admin@ecycle.local"),
                  "0000000000", generate_password_hash(password), "E-Cycle HQ"),
             )
+            conn.execute("INSERT OR IGNORE INTO admin_roles(user_id,role_name) VALUES (?, 'Super Admin')", (cur.lastrowid,))
             if not generated:
                 generated = "(value of ECYCLE_ADMIN_PASSWORD)"
         conn.commit()

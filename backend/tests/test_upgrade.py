@@ -52,6 +52,16 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(admin.get("/api/admin/security-events").status_code, 200)
         self.assertEqual(admin.get("/api/admin/collection-map").status_code, 200)
 
+    def test_rbac_user_activity_and_csrf_origin_guard(self):
+        admin = self.admin()
+        me = admin.get("/api/admin/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertIn("Super Admin", me.get_json()["admin_role"])
+        self.assertEqual(admin.get("/api/admin/users/1").status_code, 200)
+        self.assertEqual(admin.get("/api/admin/roles").status_code, 200)
+        self.assertEqual(admin.patch("/api/admin/users/1", json={"role": "user"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/auth/logout", headers={"Origin": "https://attacker.invalid"}).status_code, 403)
+
     def test_migration_marker_and_new_tables_are_additive(self):
         conn = db.connect(self.path)
         marker = conn.execute("SELECT version FROM schema_migrations WHERE version=?", ("2026-11-platform-upgrade",)).fetchone()
