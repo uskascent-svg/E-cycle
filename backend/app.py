@@ -340,10 +340,8 @@ def create_app(db_path=None):
         if existing:
             return existing
         sub = conn.execute("SELECT id,status FROM submissions WHERE id=?", (submission_id,)).fetchone()
-        if not sub or sub["status"] != "PROCESSED":
-            raise ApiError("Certificates require a processed submission", 409)
-        if not conn.execute("SELECT 1 FROM processing_records WHERE submission_id=?", (submission_id,)).fetchone():
-            raise ApiError("A facility processing record is required before issuing a certificate", 409)
+        if not sub or sub["status"] not in ("COLLECTED", "PROCESSED"):
+            raise ApiError("Certificates require a completed collection", 409)
         certificate_no = "EC-CERT-" + date.today().strftime("%Y%m%d") + "-" + secrets.token_hex(8).upper()
         verification_token = secrets.token_urlsafe(32)
         try:
@@ -1380,12 +1378,12 @@ def create_app(db_path=None):
         if not row: raise ApiError("Assignment not found", 404)
         if row["status"] != "ACCEPTED": raise ApiError("Assignment must be accepted first", 409)
         if qty > row["quantity"]: raise ApiError("Collected quantity cannot exceed submitted quantity", field="collected_quantity")
-        conn.execute("UPDATE assignments SET status='COMPLETED',completed_at=?,updated_at=? WHERE id=?", (now_iso(),now_iso(),assignment_id)); conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (assignment_id,current_user()["id"],"COMPLETED",note)); conn.execute("UPDATE submissions SET status='COLLECTED',updated_at=? WHERE id=?", (now_iso(),row["submission_id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (row["submission_id"],"COLLECTED",note));
+        conn.execute("UPDATE assignments SET status='COMPLETED',completed_at=?,updated_at=? WHERE id=?", (now_iso(),now_iso(),assignment_id)); conn.execute("INSERT INTO assignment_history (assignment_id,actor_user_id,status,reason) VALUES (?,?,?,?)", (assignment_id,current_user()["id"],"COMPLETED",note)); conn.execute("UPDATE submissions SET status='COLLECTED',updated_at=? WHERE id=?", (now_iso(),row["submission_id"])); conn.execute("INSERT INTO status_history (submission_id,status,note) VALUES (?,?,?)", (row["submission_id"],"COLLECTED",note)); certificate = issue_certificate_record(conn, row["submission_id"], current_user()["id"])
         if row["user_id"]:
             notify(row["user_id"], "PICKUP_COMPLETED", "Your e-waste pickup was recorded as completed.", conn)
             award_points(row["user_id"], row["submission_id"], 25, "Pickup completed", conn)
         score_for_distributor(distributor["id"])
-        conn.commit(); return jsonify({"assignment_id": assignment_id, "tracking_id": row["tracking_id"], "status": "COLLECTED"})
+        conn.commit(); return jsonify({"assignment_id": assignment_id, "tracking_id": row["tracking_id"], "status": "COLLECTED", "certificate_no": certificate["certificate_no"], "verification_token": certificate["verification_token"], "pdf_url": request.host_url.rstrip("/") + "/api/certificates/" + certificate["verification_token"] + "/pdf"})
 
     @app.get("/api/notifications/mine")
     @login_required
@@ -1532,10 +1530,11 @@ def create_app(db_path=None):
 
     def certificate_row(identifier):
         return get_db().execute("""SELECT c.id,c.certificate_no,c.verification_token,c.issued_at,c.revoked_at,
-            s.tracking_id,s.device_name,s.brand,s.quantity,s.category,s.user_id,
-            u.name AS user_name, p.processed_at,p.outcome,f.name AS facility_name
+            s.tracking_id,s.device_name,s.brand,s.quantity,s.category,s.device_condition,s.status,s.user_id,
+            u.name AS user_name, a.completed_at AS collection_date,p.processed_at,p.outcome,f.name AS facility_name
             FROM certificates c JOIN submissions s ON s.id=c.submission_id
             LEFT JOIN users u ON u.id=s.user_id
+            LEFT JOIN assignments a ON a.submission_id=s.id AND a.status='COMPLETED'
             LEFT JOIN processing_records p ON p.submission_id=s.id
             LEFT JOIN facilities f ON f.id=p.facility_id
             WHERE c.verification_token=? OR c.certificate_no=?""", (identifier, identifier)).fetchone()
@@ -1546,7 +1545,7 @@ def create_app(db_path=None):
             raise ApiError("Too many verification attempts; try again later", 429)
         row = certificate_row(identifier)
         if not row: raise ApiError("Certificate not found", 404)
-        result = {k: row[k] for k in ("certificate_no", "issued_at", "revoked_at", "tracking_id", "device_name", "quantity", "category", "processed_at", "outcome", "facility_name")}
+        result = {k: row[k] for k in ("certificate_no", "issued_at", "revoked_at", "tracking_id", "device_name", "quantity", "category", "device_condition", "collection_date", "processed_at", "outcome", "facility_name")}
         return jsonify({"valid": row["revoked_at"] is None, "public_safe": True, **result})
 
     @app.get("/api/certificates/<identifier>/pdf")
@@ -1559,17 +1558,19 @@ def create_app(db_path=None):
         if pdf_canvas is None or qrcode is None:
             raise ApiError("PDF generation is unavailable on this deployment", 503)
         buffer = io.BytesIO(); pdf = pdf_canvas.Canvas(buffer, pagesize=A4); width, height = A4
-        pdf.setTitle("E-Cycle Processing Certificate " + row["certificate_no"])
-        pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.setFont("Helvetica-Bold", 22); pdf.drawString(60, height - 80, "E-Cycle")
-        pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica-Bold", 18); pdf.drawString(60, height - 115, "Processing Record")
-        pdf.setFont("Helvetica", 10); pdf.drawString(60, height - 140, "E-Cycle-issued recycling/processing record; not a statutory certificate.")
+        pdf.setTitle("E-Cycle Collection Certificate " + row["certificate_no"])
+        pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.setFont("Helvetica-Bold", 22); pdf.drawString(60, height - 70, "E-CYCLE")
+        pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica-Bold", 17); pdf.drawString(60, height - 105, "E-WASTE COLLECTION CERTIFICATE")
+        pdf.setFont("Helvetica-Bold", 10); pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.drawString(60, height - 125, "Community E-Waste Management Platform")
+        pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica", 9); pdf.drawString(60, height - 145, "Platform-generated collection record — not a statutory recycling or government certificate.")
         y = height - 190; pdf.setFont("Helvetica-Bold", 11)
-        fields = [("Certificate ID", row["certificate_no"]), ("User", row["user_name"] or "Account holder"), ("Tracking ID", row["tracking_id"]), ("Device", row["device_name"]), ("Category", row["category"]), ("Quantity", str(row["quantity"])), ("Facility", row["facility_name"] or "Recorded facility"), ("Outcome", row["outcome"] or "Processed"), ("Processing date", row["processed_at"] or row["issued_at"]), ("Status", "REVOKED" if row["revoked_at"] else "VERIFIED PROCESSING RECORD")]
+        fields = [("Certificate ID", row["certificate_no"]), ("Issue date", row["issued_at"]), ("Contributor", row["user_name"] or "Account holder"), ("Tracking ID", row["tracking_id"]), ("Device", row["device_name"]), ("Category", row["category"]), ("Quantity", str(row["quantity"]) + " unit(s)"), ("Condition", str(row["device_condition"]).replace("_", " ").title()), ("Collection status", "Completed"), ("Collection date", row["collection_date"] or row["issued_at"]), ("Facility", row["facility_name"] or "To be recorded at processing")]
         for label, value in fields:
-            pdf.drawString(70, y, label + ":"); pdf.setFont("Helvetica", 11); pdf.drawString(190, y, str(value)); pdf.setFont("Helvetica-Bold", 11); y -= 25
+            pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.drawString(70, y, label + ":"); pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica", 11); pdf.drawString(190, y, str(value)); pdf.setFont("Helvetica-Bold", 11); y -= 23
+        y -= 12; pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.setFont("Helvetica-Bold", 12); pdf.drawString(70, y, "CERTIFICATE STATEMENT"); y -= 22; pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.setFont("Helvetica", 10); pdf.drawString(70, y, "This certificate acknowledges that the above electronic items have been recorded") ; y -= 15; pdf.drawString(70, y, "as collected through the E-Cycle platform for responsible e-waste management") ; y -= 15; pdf.drawString(70, y, "and further processing.")
         qr = qrcode.make(request.host_url.rstrip("/") + "/certificate.html?token=" + row["verification_token"]); qr_buffer = io.BytesIO(); qr.save(qr_buffer, format="PNG"); qr_buffer.seek(0)
         pdf.drawImage(ImageReader(qr_buffer), width - 180, height - 280, width=110, height=110, preserveAspectRatio=True, mask="auto")
-        pdf.setFont("Helvetica", 9); pdf.drawString(60, 55, "Verify at " + request.host_url.rstrip("/") + "/certificate.html")
+        pdf.setFont("Helvetica-Bold", 10); pdf.setFillColorRGB(0.08, 0.42, 0.25); pdf.drawString(60, 85, "E-Cycle Platform · System Generated"); pdf.setFont("Helvetica", 9); pdf.setFillColorRGB(0.12, 0.12, 0.12); pdf.drawString(60, 65, "Verification: scan the QR code or enter the Certificate ID at " + request.host_url.rstrip("/") + "/certificate.html"); pdf.drawString(60, 50, "Submit Responsibly. Track Transparently.")
         pdf.showPage(); pdf.save(); buffer.seek(0)
         return Response(buffer.getvalue(), mimetype="application/pdf", headers={"Content-Disposition": 'attachment; filename="' + row["certificate_no"] + '.pdf"'})
 
@@ -1656,8 +1657,7 @@ def create_app(db_path=None):
         d = body(); tracking_id = str(d.get("tracking_id", "")).strip().upper()
         conn = get_db(); sub = conn.execute("SELECT id,status FROM submissions WHERE tracking_id=?", (tracking_id,)).fetchone()
         if not sub: raise ApiError("Submission not found", 404)
-        if sub["status"] != "PROCESSED": raise ApiError("Certificates require a processed submission", 409)
-        if not conn.execute("SELECT 1 FROM processing_records WHERE submission_id=?", (sub["id"],)).fetchone(): raise ApiError("A facility processing record is required before issuing a certificate", 409)
+        if sub["status"] not in ("COLLECTED", "PROCESSED"): raise ApiError("Certificates require a completed collection", 409)
         if conn.execute("SELECT 1 FROM certificates WHERE submission_id=?", (sub["id"],)).fetchone(): raise ApiError("A certificate already exists", 409)
         record = issue_certificate_record(conn, sub["id"], current_user()["id"])
         conn.execute("INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id) VALUES (?,?,?,?)", (current_user()["id"], "ISSUE_CERTIFICATE", "submission", tracking_id)); conn.commit()
