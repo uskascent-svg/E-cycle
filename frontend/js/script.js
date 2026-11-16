@@ -450,6 +450,23 @@ async function loadOperations() {
 
 /* ---------- page bootstrap ---------- */
 document.addEventListener("DOMContentLoaded", async () => {
+    // Keep the Operations entry visible while authentication and dashboard data load.
+    // It is an explicit route so it must not depend on the async navbar refresh.
+    if (window.location.pathname === "/admin/dashboard") {
+        const adminLinks = document.querySelector(".nav-links");
+        if (adminLinks && !adminLinks.querySelector('a[href="/admin/operations"]')) {
+            const operationsLink = make("a", "Operations");
+            operationsLink.href = "/admin/operations";
+            adminLinks.insertBefore(operationsLink, adminLinks.querySelector('a[href="/admin/analytics"]'));
+        }
+        const quickLinks = document.querySelector(".home-links");
+        if (quickLinks && !quickLinks.querySelector('a[href="/admin/operations"]')) {
+            const operationsCard = make("a", undefined, "home-link");
+            operationsCard.href = "/admin/operations";
+            operationsCard.append(make("strong", "Operations panel"), make("span", "Open detailed operational controls and records."));
+            quickLinks.prepend(operationsCard);
+        }
+    }
     mountAssistant();
     await initNav();
     if (window.location.pathname === "/admin/analytics" && window.scopeSelect) {
