@@ -452,6 +452,15 @@ async function loadOperations() {
 document.addEventListener("DOMContentLoaded", async () => {
     mountAssistant();
     await initNav();
+    if (window.location.pathname === "/admin/analytics" && window.scopeSelect) {
+        scopeSelect.value = "combined";
+        if (typeof loadVisualAnalytics === "function") loadVisualAnalytics();
+    }
+    if (window.location.pathname === "/admin/dashboard") {
+        document.querySelectorAll(".home-card span").forEach((el) => { el.textContent = "combined recorded activity"; });
+        const notice = document.querySelector(".home-notice");
+        if (notice) notice.textContent = "Combined platform view. Metrics include demonstration records and are not independently verified real-world transactions.";
+    }
     if ($("submissionRows")) loadDashboard();
     if ($("driveList")) loadDrives();
     if ($("impTotal")) loadImpact();
