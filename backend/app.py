@@ -1111,7 +1111,20 @@ def create_app(db_path=None):
         rows = lambda sql, values=(): [dict(r) for r in conn.execute(sql, values).fetchall()]
         total = one("SELECT COUNT(*) FROM submissions" + clause, args); quantity = one("SELECT COALESCE(SUM(quantity),0) FROM submissions" + clause, args)
         completed = one("SELECT COUNT(*) FROM assignments WHERE status='COMPLETED'"); pending = one("SELECT COUNT(*) FROM submissions WHERE status IN ('SUBMITTED','VERIFIED','COLLECTION_SCHEDULED')")
-        demo = conn.execute("SELECT record_type,status,created_at,payload_json FROM demo_detail_records ORDER BY record_id").fetchall()
+        def demo_in_range(record):
+            if not start and not end:
+                return True
+            record_date = None
+            for fmt in ("%d %B %Y, %I:%M %p", "%d %B %Y", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+                try:
+                    record_date = datetime.strptime(record["created_at"], fmt).date()
+                    break
+                except (TypeError, ValueError):
+                    continue
+            if record_date is None:
+                return True
+            return (not start or record_date >= date.fromisoformat(start)) and (not end or record_date <= date.fromisoformat(end))
+        demo = [row for row in conn.execute("SELECT record_type,status,created_at,payload_json FROM demo_detail_records ORDER BY record_id").fetchall() if demo_in_range(row)]
         def demo_payload(kind=None):
             return [(r, json.loads(r["payload_json"])) for r in demo if not kind or r["record_type"] == kind]
         demo_sub = demo_payload("E-waste submission"); demo_pick = demo_payload("Completed pickup"); demo_task = demo_payload("Pending task"); demo_inv = demo_payload("Collected inventory")
