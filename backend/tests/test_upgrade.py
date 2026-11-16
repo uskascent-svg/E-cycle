@@ -121,7 +121,9 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/admin/security/overview").status_code, 403)
         admin = self.admin()
         self.assertEqual(admin.get("/admin/security").status_code, 200)
-        self.assertEqual(admin.get("/admin/operations").status_code, 200)
+        operations = admin.get("/admin/operations")
+        self.assertEqual(operations.status_code, 302)
+        self.assertEqual(operations.headers["Location"], "/admin/dashboard")
         for _ in range(11):
             self.application.test_client().post("/api/auth/login", json={"email": "security-test@example.com", "password": "wrong-password"})
         overview = admin.get("/api/admin/security/overview").get_json()

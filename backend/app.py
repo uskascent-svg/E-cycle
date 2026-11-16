@@ -1926,7 +1926,7 @@ User message:
     def admin_section_page(section):
         if section not in {"operations", "users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
             return not_found(None)
-        return send_from_directory(FRONTEND, "admin-dashboard.html")
+        return redirect("/admin/dashboard")
 
     @app.get("/")
     def home():
