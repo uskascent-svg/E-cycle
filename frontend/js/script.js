@@ -451,6 +451,56 @@ async function loadOperations() {
     } catch (e) { if (e.status === 401) window.location.href = "login.html"; else showMessage($("pickupMessage"), e.message); }
 }
 
+/* ---------- admin pickup assignment workspace ---------- */
+async function loadAdminAssignmentPanel() {
+    if (window.location.pathname !== "/admin/operations") return;
+    const host = document.querySelector("main .container");
+    if (!host || document.getElementById("adminAssignmentPanel")) return;
+    const panel = make("section", undefined, "panel admin-assignment-panel");
+    panel.id = "adminAssignmentPanel";
+    panel.innerHTML = '<div class="assignment-heading"><div><span class="tag">ADMIN PICKUP DISPATCH</span><h2>Assign a distributor</h2><p>Match each pending e-waste request with an available distributor and pickup window.</p></div><button type="button" class="btn btn-outline" id="assignmentRefresh">Refresh requests</button></div><p id="assignmentMessage" aria-live="polite"></p><div id="assignmentRows" class="assignment-list"><p class="empty">Loading pending requests…</p></div>';
+    host.prepend(panel);
+    document.getElementById("assignmentRefresh").onclick = loadAdminAssignmentPanelData;
+    await loadAdminAssignmentPanelData();
+}
+
+async function loadAdminAssignmentPanelData() {
+    const rows = $("assignmentRows");
+    if (!rows) return;
+    rows.textContent = "Loading pending requests…";
+    try {
+        const [submitted, verified, distributors] = await Promise.all([
+            api("/admin/submissions?status=SUBMITTED"),
+            api("/admin/submissions?status=VERIFIED"),
+            api("/admin/distributors")
+        ]);
+        const requests = [...submitted.submissions, ...verified.submissions];
+        rows.textContent = "";
+        if (!requests.length) { rows.append(make("p", "No pending e-waste requests are awaiting distributor assignment.", "empty")); return; }
+        if (!distributors.distributors.length) { rows.append(make("p", "No active distributors are available. Add and verify a distributor first.", "empty")); return; }
+        const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+        requests.forEach((request) => {
+            const card = make("article", undefined, "assignment-card");
+            const details = make("div", undefined, "assignment-details");
+            details.append(make("strong", request.tracking_id), make("span", `${request.device_name} · ${request.category} · ${request.quantity} unit(s)`), make("small", `${request.status} · ${request.location || "Address on file"}`));
+            const form = make("form", undefined, "assignment-form");
+            form.innerHTML = '<label>Distributor<select name="distributor"></select></label><label>Date<input name="date" type="date" min="' + tomorrow + '" value="' + tomorrow + '"></label><label>Start<input name="start" type="time" value="09:00" required></label><label>End<input name="end" type="time" value="11:00" required></label><button class="btn btn-primary" type="submit">Assign pickup</button>';
+            const select = form.querySelector("select");
+            distributors.distributors.filter(d => d.status === "ACTIVE").forEach((d) => select.append(new Option(`${d.name} · ${d.service_area}`, d.id)));
+            form.onsubmit = async (event) => {
+                event.preventDefault();
+                const button = form.querySelector("button"); button.disabled = true;
+                try {
+                    await api("/admin/assignments", { method: "POST", body: { tracking_id: request.tracking_id, distributor_id: Number(select.value), pickup_date: form.date.value, start_time: form.start.value, end_time: form.end.value } });
+                    showMessage($("assignmentMessage"), `${request.tracking_id} assigned successfully. The distributor and contributor were notified.`, "ok");
+                    await loadAdminAssignmentPanelData();
+                } catch (e) { button.disabled = false; showMessage($("assignmentMessage"), e.message); }
+            };
+            card.append(details, form); rows.append(card);
+        });
+    } catch (e) { rows.textContent = ""; rows.append(make("p", e.message, "empty")); }
+}
+
 /* ---------- page bootstrap ---------- */
 document.addEventListener("DOMContentLoaded", async () => {
     // Keep the Operations entry visible while authentication and dashboard data load.
@@ -505,6 +555,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (id) { $("trackId").value = id; runTrack(id.trim().toUpperCase()); }
     }
     if ($("pickupSlots")) loadOperations();
+    if (window.location.pathname === "/admin/operations") loadAdminAssignmentPanel();
     if ($("distributorRows")) {
         $("distributorRefresh")?.addEventListener("click", loadDistributorWorkspace);
         loadDistributorWorkspace();
