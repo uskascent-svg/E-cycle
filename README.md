@@ -51,6 +51,26 @@ a separate project phase with schema and deployment validation.
 - `POST /api/admin/certificates`, `GET /api/certificates/mine`, and public certificate verification.
 - `POST /api/assistant/chat` for the single server-side Gemini assistant.
 
+## Admin workflow pages
+
+- `/admin/dashboard` — executive overview and platform KPIs.
+- `/admin/schedule-pickup` — focused dispatch screen for assigning an active
+  distributor to a submitted or verified user request, with a pickup date and
+  time window. Successful assignment updates status, notifications, history and
+  the audit log through the server-side assignment API.
+- `/admin/operations` — detailed operational information including activity,
+  inventory, security, distributor performance, collection coverage and reports.
+
+The two pages are intentionally separate: scheduling performs dispatch actions;
+Operations provides the broader read-and-monitor workspace.
+
+## Verification status
+
+The current repository is synchronized with `origin/main`. The complete backend
+regression suite passes with 42 tests, including authentication, authorization,
+status transitions, distributor assignments, certificates, QR verification,
+security controls, migrations and health checks.
+
 ## Deployment checklist
 
 1. Copy `.env.example` to a private environment file and set a long random
