@@ -126,6 +126,11 @@ async function initNav() {
     };
     box.append(dash, schedule, out);
     if (currentUser.role === "admin" && links) {
+        if (!links.querySelector('a[href="/admin/operations"]')) {
+            const operations = make("a", "Operations");
+            operations.href = "/admin/operations";
+            links.insertBefore(operations, links.querySelector('a[href="/admin/analytics"]'));
+        }
         const a = make("a", "Admin"); a.href = "/admin/dashboard"; links.append(a);
     }
 }
