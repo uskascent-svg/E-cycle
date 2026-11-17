@@ -1926,9 +1926,13 @@ User message:
     def admin_operations_page():
         return send_from_directory(FRONTEND, "admin-dashboard.html")
 
+    @app.get("/admin/schedule-pickup")
+    def admin_schedule_pickup_page():
+        return send_from_directory(FRONTEND, "admin-schedule-pickup.html")
+
     @app.get("/admin/<section>")
     def admin_section_page(section):
-        if section not in {"operations", "users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
+        if section not in {"operations", "schedule-pickup", "users", "submissions", "distributors", "facilities", "pickups", "drives", "certificates", "reports", "notifications", "analytics", "security", "settings"}:
             return not_found(None)
         return redirect("/admin/dashboard")
 

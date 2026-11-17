@@ -108,7 +108,7 @@ async function initNav() {
     const schedule = make("a", "Schedule Pickup", "btn btn-outline");
     const adminArea = currentUser.role === "admin";
     dash.href = adminArea ? "/admin/dashboard" : "/dashboard.html";
-    schedule.href = adminArea ? "/admin/operations" : "/operations.html";
+    schedule.href = adminArea ? "/admin/schedule-pickup" : "/operations.html";
     const out = make("button", "Logout", "btn btn-primary");
     out.type = "button";
     out.onclick = async () => {
@@ -458,8 +458,8 @@ async function loadOperations() {
 
 /* ---------- admin pickup assignment workspace ---------- */
 async function loadAdminAssignmentPanel() {
-    if (window.location.pathname !== "/admin/operations") return;
-    const host = document.querySelector("main .container");
+    if (window.location.pathname !== "/admin/schedule-pickup") return;
+    const host = document.getElementById("adminAssignmentHost") || document.querySelector("main .container");
     if (!host || document.getElementById("adminAssignmentPanel")) return;
     const panel = make("section", undefined, "panel admin-assignment-panel");
     panel.id = "adminAssignmentPanel";
@@ -560,7 +560,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (id) { $("trackId").value = id; runTrack(id.trim().toUpperCase()); }
     }
     if ($("pickupSlots")) loadOperations();
-    if (window.location.pathname === "/admin/operations") loadAdminAssignmentPanel();
+    if (window.location.pathname === "/admin/schedule-pickup") loadAdminAssignmentPanel();
     if ($("distributorRows")) {
         $("distributorRefresh")?.addEventListener("click", loadDistributorWorkspace);
         loadDistributorWorkspace();
